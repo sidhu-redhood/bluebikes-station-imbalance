@@ -1,0 +1,24 @@
+# Data (raw, processed, and the polled database)
+data/
+*.db
+*.sqlite
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Model checkpoints and outputs
+*.pt
+*.pth
+outputs/
+
+# Secrets
+.env
+
+# OS and editor
+.DS_Store
+.idea/
+.vscode/
