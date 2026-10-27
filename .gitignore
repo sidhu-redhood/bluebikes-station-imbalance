@@ -2,6 +2,8 @@
 data/
 *.db
 *.sqlite
+*.db-wal
+*.db-shm
 
 # Python
 .venv/
@@ -17,6 +19,10 @@ outputs/
 
 # Secrets
 .env
+*.pem
+*_key
+*_key.pub
+id_*
 
 # OS and editor
 .DS_Store
