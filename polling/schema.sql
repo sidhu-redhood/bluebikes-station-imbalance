@@ -9,12 +9,16 @@
     It holds the full original object, so no value is lost if the feed adds or
     changes a field.
   - Run with: sqlite3 bluebikes.db < polling/schema.sql
+  - This file builds a NEW database. Every statement is CREATE ... IF NOT EXISTS,
+    so running it against an existing database changes nothing except the
+    user_version stamp. To move an existing database forward, run the files in
+    polling/migrations in order instead.
   - foreign_keys is a per connection setting. The poller must run
     PRAGMA foreign_keys = ON; every time it connects.
 */
 
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 PRAGMA foreign_keys = ON;
 
 
@@ -42,6 +46,11 @@ CREATE TABLE IF NOT EXISTS fetch_log (
 );
 CREATE INDEX IF NOT EXISTS idx_fetch_log_feed_time
     ON fetch_log (feed_name, fetched_at);
+/* The poller looks up the previous fetch of the same feed by payload hash on
+   every on_change fetch. Without this index that is a full scan of a table
+   that grows by about 3.4k rows a day. */
+CREATE INDEX IF NOT EXISTS idx_fetch_log_feed_payload
+    ON fetch_log (feed_name, payload_sha256);
 
 
 /* ------------------------------------------------------------------
@@ -55,13 +64,18 @@ CREATE INDEX IF NOT EXISTS idx_fetch_log_feed_time
    Compute the hash over the data object only, as canonical JSON (sorted keys).
    The top level last_updated and ttl change every minute on all 12 feeds,
    so hashing the whole response would make every fetch look new.
+   The key is (feed_name, payload_sha256), not the hash alone. Two feeds can
+   produce the same data object, most easily when both are empty, and a bare
+   hash key would drop the second feed's payload and credit the row to the
+   first feed. The poller must filter on feed_name in every lookup here.
    ------------------------------------------------------------------ */
 CREATE TABLE IF NOT EXISTS raw_payloads (
-    payload_sha256     TEXT    PRIMARY KEY,
     feed_name          TEXT    NOT NULL,
+    payload_sha256     TEXT    NOT NULL,
     first_fetch_id     INTEGER NOT NULL REFERENCES fetch_log (fetch_id),
     first_seen         INTEGER NOT NULL,
-    payload            TEXT    NOT NULL
+    payload            TEXT    NOT NULL,
+    PRIMARY KEY (feed_name, payload_sha256)
 );
 
 

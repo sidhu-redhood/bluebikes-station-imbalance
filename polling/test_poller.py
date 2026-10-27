@@ -76,6 +76,38 @@ class PollerTest(unittest.TestCase):
                            ("ebikes_at_stations", {"stations": []}), ("system_hours", {"rental_hours": []})]:
             self.assertTrue(poller.store_feed(self.conn, name, "u", feed(data), 1000), name)
 
+    def test_same_payload_from_two_feeds_is_archived_once_per_feed(self):
+        """Two feeds can produce the same data object, most easily when both are empty.
+
+        raw_payloads is keyed on (feed_name, payload_sha256), so neither feed
+        loses its payload to the other.
+        """
+        data = {"stations": []}        # the real empty shape of both feeds
+        self.assertTrue(poller.store_feed(self.conn, "station_information", "u", feed(data), 1000))
+        self.assertTrue(poller.store_feed(self.conn, "ebikes_at_stations", "u", feed(data), 1000))
+        self.assertEqual(self.count("SELECT COUNT(*) FROM raw_payloads"), 2)
+        self.assertEqual(
+            {r[0] for r in self.conn.execute("SELECT feed_name FROM raw_payloads")},
+            {"station_information", "ebikes_at_stations"},
+        )
+
+    def test_on_change_skip_does_not_cross_feeds(self):
+        """A matching hash from a DIFFERENT feed must not skip parsing.
+
+        Both parsers read their own key out of one shared document, so the two
+        feeds hash alike. Keying on the hash alone made the second feed inherit
+        the first feed's record_count and never parse its own rows at all.
+        """
+        data = {"regions": [{"region_id": "r1"}, {"region_id": "r2"}],
+                "alerts": [{"alert_id": "a1", "type": "SYSTEM_CLOSURE"}]}
+        self.assertTrue(poller.store_feed(self.conn, "system_regions", "u", feed(data), 1000))
+        self.assertTrue(poller.store_feed(self.conn, "system_alerts", "u", feed(data), 2000))
+        self.assertEqual(self.count("SELECT COUNT(*) FROM system_regions"), 2)
+        self.assertEqual(self.count("SELECT COUNT(*) FROM system_alerts"), 1)
+        counts = dict(self.conn.execute(
+            "SELECT feed_name, record_count FROM fetch_log WHERE ok=1"))
+        self.assertEqual(counts, {"system_regions": 2, "system_alerts": 1})
+
     def test_bad_json_logs_failure_and_keeps_earlier_data(self):
         poller.store_feed(self.conn, "station_status", "u", feed({"stations": [{"station_id": "a"}]}), 1000)
         self.assertFalse(poller.store_feed(self.conn, "station_status", "u", b"<html>oops", 1600))

@@ -38,7 +38,7 @@ DEFAULT_DB = Path(os.environ.get("BLUEBIKES_DB", "/srv/bluebikes/bluebikes.db"))
 
 TIMEOUT_SECONDS = 15
 USER_AGENT = "bluebikes-imbalance-poller/1.0 (Northeastern CS5100 student project)"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 # "Hourly" feeds run when the last good fetch is older than this. It is a bit
 # under 60 minutes so timer jitter does not push a feed to every second hour.
 HOURLY_SECONDS = 55 * 60
@@ -437,6 +437,8 @@ def parse_system_calendar(conn, fetch_id, fetched_at, data):
 #   on_change : insert rows only when the payload hash is new
 #   interval  : 0 means every poll, otherwise HOURLY_SECONDS
 # raw_payloads policy: every changed payload except station_status.
+# Every raw_payloads and payload hash lookup filters on feed_name. The hash
+# covers the data object only, so two feeds can share one.
 # ----------------------------------------------------------------------
 
 @dataclass
@@ -481,7 +483,8 @@ def store_feed(conn, feed_name, url, raw: bytes, fetched_at: int, http_status: i
 
         with transaction(conn):
             known = conn.execute(
-                "SELECT 1 FROM raw_payloads WHERE payload_sha256 = ?", (digest,)
+                "SELECT 1 FROM raw_payloads WHERE feed_name = ? AND payload_sha256 = ?",
+                (feed_name, digest),
             ).fetchone() is not None
 
             cursor = conn.execute(
@@ -501,8 +504,9 @@ def store_feed(conn, feed_name, url, raw: bytes, fetched_at: int, http_status: i
 
             if spec.mode == "on_change" and known:
                 previous = conn.execute(
-                    "SELECT record_count FROM fetch_log WHERE payload_sha256 = ? "
-                    "AND record_count IS NOT NULL ORDER BY fetch_id DESC LIMIT 1", (digest,)
+                    "SELECT record_count FROM fetch_log WHERE feed_name = ? "
+                    "AND payload_sha256 = ? AND record_count IS NOT NULL "
+                    "ORDER BY fetch_id DESC LIMIT 1", (feed_name, digest),
                 ).fetchone()
                 count = previous[0] if previous else None
             else:
