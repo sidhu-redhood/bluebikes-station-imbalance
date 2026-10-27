@@ -1,0 +1,14 @@
+{
+  "ebikes_at_stations": "https://gbfs.lyft.com/gbfs/1.1/bos/en/ebikes_at_stations.json",
+  "free_bike_status": "https://gbfs.lyft.com/gbfs/1.1/bos/en/free_bike_status.json",
+  "gbfs": "https://gbfs.lyft.com/gbfs/1.1/bos/gbfs.json",
+  "gbfs_versions": "https://gbfs.lyft.com/gbfs/1.1/bos/en/gbfs_versions.json",
+  "station_information": "https://gbfs.lyft.com/gbfs/1.1/bos/en/station_information.json",
+  "station_status": "https://gbfs.lyft.com/gbfs/1.1/bos/en/station_status.json",
+  "system_alerts": "https://gbfs.lyft.com/gbfs/1.1/bos/en/system_alerts.json",
+  "system_calendar": "https://gbfs.lyft.com/gbfs/1.1/bos/en/system_calendar.json",
+  "system_hours": "https://gbfs.lyft.com/gbfs/1.1/bos/en/system_hours.json",
+  "system_information": "https://gbfs.lyft.com/gbfs/1.1/bos/en/system_information.json",
+  "system_pricing_plans": "https://gbfs.lyft.com/gbfs/1.1/bos/en/system_pricing_plans.json",
+  "system_regions": "https://gbfs.lyft.com/gbfs/1.1/bos/en/system_regions.json"
+}
