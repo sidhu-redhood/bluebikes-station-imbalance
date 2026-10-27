@@ -30,3 +30,6 @@ web/out/
 web/next-env.d.ts
 .env.local
 *.tsbuildinfo
+
+# Kiro IDE workspace (planning/spec docs, not part of the app)
+.kiro/
