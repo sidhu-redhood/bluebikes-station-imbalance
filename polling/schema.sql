@@ -137,10 +137,12 @@ CREATE TABLE IF NOT EXISTS station_status (
     num_scooters_available      INTEGER,           -- only on some stations
     num_scooters_unavailable    INTEGER,           -- only on some stations
     extra_json                  TEXT,
-    PRIMARY KEY (station_id, fetched_at)
+    PRIMARY KEY (station_id, fetch_id)    -- fetch_id is unique, fetched_at is not
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_station_status_time
     ON station_status (fetched_at);
+CREATE INDEX IF NOT EXISTS idx_station_status_fetch
+    ON station_status (fetch_id);
 
 /* Empty and full, using the rule we agreed on.
    An offline or not renting station does not count as empty or full. */
