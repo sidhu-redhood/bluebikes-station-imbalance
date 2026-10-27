@@ -10,9 +10,9 @@ Run from anywhere:
     python polling/fetch_feeds.py
 """
 
+import http.client
 import json
 import sys
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -32,12 +32,15 @@ def download_gbfs(url: str) -> dict:
     try:
         with urllib.request.urlopen(url, timeout=TIMEOUT_SECONDS) as response:
             body = response.read()
-    except (urllib.error.URLError, TimeoutError) as err:
+    except (http.client.HTTPException, OSError) as err:
+        # OSError already covers URLError, HTTPError and TimeoutError.
+        # HTTPException covers cut off or malformed responses (IncompleteRead).
         raise FeedError(f"Could not download {url}: {err}") from err
 
     try:
         return json.loads(body)
-    except json.JSONDecodeError as err:
+    except ValueError as err:
+        # JSONDecodeError and UnicodeDecodeError are both ValueErrors.
         raise FeedError(f"Response from {url} is not valid JSON: {err}") from err
 
 
