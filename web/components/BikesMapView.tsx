@@ -153,7 +153,7 @@ function useNeighborhoods() {
   return geo;
 }
 
-/** The Bluebikes tracker on CoolBoston's map: Mapbox Standard basemap, deck.gl interleaved overlay. */
+/** The Blue Bikes tracker: Mapbox Standard 3D basemap, deck.gl interleaved overlay. */
 export default function BikesMapView({ token }: { token: string }) {
   const data = useBikes();
   const hoods = useNeighborhoods();

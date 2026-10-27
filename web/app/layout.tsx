@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CoolBoston — Bluebikes tracker",
+  title: "Blue Bikes — Bluebikes tracker",
   description: "Markov model of Bluebikes station bike counts on the Boston map.",
 };
 
