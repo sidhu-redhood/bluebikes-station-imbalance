@@ -1,4 +1,4 @@
-﻿"""
+"""
 Tasks 1-3: load one month of Bluebikes data around Northeastern University.
 
   Task 1: read the trip CSV and keep trips touching the NEU station cluster
