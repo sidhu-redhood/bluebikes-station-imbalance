@@ -9,12 +9,17 @@
     It holds the full original object, so no value is lost if the feed adds or
     changes a field.
   - Run with: sqlite3 bluebikes.db < polling/schema.sql
+  - This file builds a NEW database. Every statement is CREATE ... IF NOT EXISTS,
+    so running it against an existing database changes nothing except the
+    user_version stamp. To move an existing database forward, run the files in
+    polling/migrations in order instead. The poller checks the raw_payloads key
+    when it connects and refuses to run on an old layout.
   - foreign_keys is a per connection setting. The poller must run
     PRAGMA foreign_keys = ON; every time it connects.
 */
 
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 PRAGMA foreign_keys = ON;
 
 
@@ -40,6 +45,8 @@ CREATE TABLE IF NOT EXISTS fetch_log (
                                            -- changes on every fetch, even when the
                                            -- content is the same.
 );
+/* Also serves the poller's "previous good fetch of this feed" lookup and the
+   hourly rule: both filter on feed_name and sort by fetched_at. */
 CREATE INDEX IF NOT EXISTS idx_fetch_log_feed_time
     ON fetch_log (feed_name, fetched_at);
 
@@ -55,13 +62,18 @@ CREATE INDEX IF NOT EXISTS idx_fetch_log_feed_time
    Compute the hash over the data object only, as canonical JSON (sorted keys).
    The top level last_updated and ttl change every minute on all 12 feeds,
    so hashing the whole response would make every fetch look new.
+   The key is (feed_name, payload_sha256), not the hash alone. Two feeds can
+   produce the same data object, most easily when both are empty, and a bare
+   hash key would drop the second feed's payload and credit the row to the
+   first feed. The poller must filter on feed_name in every lookup here.
    ------------------------------------------------------------------ */
 CREATE TABLE IF NOT EXISTS raw_payloads (
-    payload_sha256     TEXT    PRIMARY KEY,
     feed_name          TEXT    NOT NULL,
+    payload_sha256     TEXT    NOT NULL,
     first_fetch_id     INTEGER NOT NULL REFERENCES fetch_log (fetch_id),
     first_seen         INTEGER NOT NULL,
-    payload            TEXT    NOT NULL
+    payload            TEXT    NOT NULL,
+    PRIMARY KEY (feed_name, payload_sha256)
 );
 
 
@@ -188,8 +200,9 @@ CREATE TABLE IF NOT EXISTS free_bike_status (
 
 /* ------------------------------------------------------------------
    System feeds. These change rarely, so the poller inserts rows only
-   when the payload hash is new. fetch_id says which fetch the rows came
-   from. "Current" means the rows with the highest fetch_id per table.
+   when the payload differs from the previous good fetch of that feed.
+   fetch_id says which fetch the rows came from. "Current" means the
+   rows with the highest fetch_id per table.
    ------------------------------------------------------------------ */
 CREATE TABLE IF NOT EXISTS system_information (
     fetch_id           INTEGER PRIMARY KEY REFERENCES fetch_log (fetch_id),
