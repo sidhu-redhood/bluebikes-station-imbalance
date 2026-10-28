@@ -12,7 +12,8 @@
   - This file builds a NEW database. Every statement is CREATE ... IF NOT EXISTS,
     so running it against an existing database changes nothing except the
     user_version stamp. To move an existing database forward, run the files in
-    polling/migrations in order instead.
+    polling/migrations in order instead. The poller checks the raw_payloads key
+    when it connects and refuses to run on an old layout.
   - foreign_keys is a per connection setting. The poller must run
     PRAGMA foreign_keys = ON; every time it connects.
 */
@@ -44,13 +45,10 @@ CREATE TABLE IF NOT EXISTS fetch_log (
                                            -- changes on every fetch, even when the
                                            -- content is the same.
 );
+/* Also serves the poller's "previous good fetch of this feed" lookup and the
+   hourly rule: both filter on feed_name and sort by fetched_at. */
 CREATE INDEX IF NOT EXISTS idx_fetch_log_feed_time
     ON fetch_log (feed_name, fetched_at);
-/* The poller looks up the previous fetch of the same feed by payload hash on
-   every on_change fetch. Without this index that is a full scan of a table
-   that grows by about 3.4k rows a day. */
-CREATE INDEX IF NOT EXISTS idx_fetch_log_feed_payload
-    ON fetch_log (feed_name, payload_sha256);
 
 
 /* ------------------------------------------------------------------
@@ -202,8 +200,9 @@ CREATE TABLE IF NOT EXISTS free_bike_status (
 
 /* ------------------------------------------------------------------
    System feeds. These change rarely, so the poller inserts rows only
-   when the payload hash is new. fetch_id says which fetch the rows came
-   from. "Current" means the rows with the highest fetch_id per table.
+   when the payload differs from the previous good fetch of that feed.
+   fetch_id says which fetch the rows came from. "Current" means the
+   rows with the highest fetch_id per table.
    ------------------------------------------------------------------ */
 CREATE TABLE IF NOT EXISTS system_information (
     fetch_id           INTEGER PRIMARY KEY REFERENCES fetch_log (fetch_id),

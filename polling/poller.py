@@ -152,7 +152,16 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous = NORMAL")   # safe with WAL, fewer disk syncs
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version != SCHEMA_VERSION:
+        conn.close()
         raise RuntimeError(f"Database schema version is {version}, expected {SCHEMA_VERSION}")
+    # schema.sql stamps user_version even on an old database, so check the real key too.
+    pk = {row[1] for row in conn.execute("PRAGMA table_info(raw_payloads)") if row[5] > 0}
+    if pk != {"feed_name", "payload_sha256"}:
+        conn.close()
+        raise RuntimeError(
+            "raw_payloads has the wrong primary key. "
+            "Run polling/migrations/002_raw_payloads_key.sql on this database."
+        )
     return conn
 
 
@@ -176,6 +185,14 @@ def log_failure(conn, feed_name, url, fetched_at, http_status, error) -> None:
             "VALUES (?, ?, ?, 0, ?, ?)",
             (feed_name, url, fetched_at, http_status, error[:500]),
         )
+
+
+def try_log_failure(conn, *args) -> None:
+    """log_failure, but never raises. A locked or full database must not abort the poll."""
+    try:
+        log_failure(conn, *args)
+    except Exception:
+        log.exception("could not write failure row to fetch_log")
 
 
 # ----------------------------------------------------------------------
@@ -434,7 +451,8 @@ def parse_system_calendar(conn, fetch_id, fetched_at, data):
 # Feed table
 #   snapshot  : new rows on every fetch (they change all the time)
 #   upsert    : update one current row per item (stations, gbfs lists)
-#   on_change : insert rows only when the payload hash is new
+#   on_change : insert rows only when the payload differs from the previous
+#               good fetch of that feed (so A -> B -> A parses the last A)
 #   interval  : 0 means every poll, otherwise HOURLY_SECONDS
 # raw_payloads policy: every changed payload except station_status.
 # Every raw_payloads and payload hash lookup filters on feed_name. The hash
@@ -483,9 +501,18 @@ def store_feed(conn, feed_name, url, raw: bytes, fetched_at: int, http_status: i
 
         with transaction(conn):
             known = conn.execute(
-                "SELECT 1 FROM raw_payloads WHERE feed_name = ? AND payload_sha256 = ?",
-                (feed_name, digest),
+                "SELECT 1 FROM raw_payloads WHERE feed_name = ? AND payload_sha256 = ?", (feed_name, digest)
             ).fetchone() is not None
+
+            # Compare with the previous good fetch of this feed, not with every hash
+            # ever seen. Otherwise A -> B -> A would skip the parser and leave B's rows.
+            # This must run BEFORE the fetch_log insert below, or it finds itself.
+            last = conn.execute(
+                "SELECT payload_sha256, record_count FROM fetch_log "
+                "WHERE feed_name = ? AND ok = 1 ORDER BY fetched_at DESC, fetch_id DESC LIMIT 1",
+                (feed_name,),
+            ).fetchone()
+            unchanged = last is not None and last[0] == digest and last[1] is not None
 
             cursor = conn.execute(
                 "INSERT INTO fetch_log (feed_name, url, fetched_at, feed_last_updated, ttl, "
@@ -502,13 +529,8 @@ def store_feed(conn, feed_name, url, raw: bytes, fetched_at: int, http_status: i
                     (digest, feed_name, fetch_id, fetched_at, canonical(data)),
                 )
 
-            if spec.mode == "on_change" and known:
-                previous = conn.execute(
-                    "SELECT record_count FROM fetch_log WHERE feed_name = ? "
-                    "AND payload_sha256 = ? AND record_count IS NOT NULL "
-                    "ORDER BY fetch_id DESC LIMIT 1", (feed_name, digest),
-                ).fetchone()
-                count = previous[0] if previous else None
+            if spec.mode == "on_change" and unchanged:
+                count = last[1]
             else:
                 count = spec.parser(conn, fetch_id, fetched_at, data)
 
@@ -518,7 +540,7 @@ def store_feed(conn, feed_name, url, raw: bytes, fetched_at: int, http_status: i
         return True
     except Exception as err:
         log.error("%s failed: %s: %s", feed_name, type(err).__name__, err)
-        log_failure(conn, feed_name, url, fetched_at, http_status, f"{type(err).__name__}: {err}")
+        try_log_failure(conn, feed_name, url, fetched_at, http_status, f"{type(err).__name__}: {err}")
         return False
 
 
@@ -552,7 +574,7 @@ def run_poll(conn, feeds: dict, fetch=fetch_feed, force: bool = False, now: Opti
         result = fetch(name, url)
         if result.raw is None:
             log.error("%s fetch failed: %s", name, result.error)
-            log_failure(conn, name, url, result.fetched_at, result.http_status, result.error or "unknown")
+            try_log_failure(conn, name, url, result.fetched_at, result.http_status, result.error or "unknown")
             failed += 1
         elif store_feed(conn, name, url, result.raw, result.fetched_at, result.http_status or 200):
             ok += 1
