@@ -17,7 +17,7 @@ from pathlib import Path
 DEFAULT_DB = Path(os.environ.get("BLUEBIKES_DB", "/srv/bluebikes/bluebikes.db"))
 
 MAX_AGE_SECONDS = 30 * 60
-
+DUPLICATE_SECONDS = 5 * 60
 GAP_SECONDS = 15 * 60
 WINDOW_SECONDS = 24 * 60 * 60
 
@@ -57,6 +57,14 @@ def find_gaps(times: list, max_gap: int = GAP_SECONDS) -> list:
             gaps.append((earlier, later))
     return gaps
 
+def find_duplicates(times: list, min_gap: int = DUPLICATE_SECONDS) -> list:
+    """(first, second) pairs where two polls in a row are less than min_gap apart."""
+    duplicates = []
+    for earlier, later in zip(times, times[1:]):
+        if later - earlier < min_gap:
+            duplicates.append((earlier, later))
+    return duplicates
+
 def fmt_time(epoch: int) -> str:
     """Epoch seconds to a readable UTC time, like 2026-10-28 15:00 UTC."""
     return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(epoch))
@@ -84,8 +92,13 @@ def main() -> int:
     for start, end in gaps:
         problems.append(f"gap of {(end - start) / 60:.0f} minutes "
                         f"from {fmt_time(start)} to {fmt_time(end)}")
+    duplicates = find_duplicates(times)
+    for first, second in duplicates:
+        problems.append(f"polls only {second - first} seconds apart "
+                        f"at {fmt_time(first)} and {fmt_time(second)}")
 
-    print(f"station_status: {len(times)} good polls in the last 24 hours, {len(gaps)} gaps")
+    print(f"station_status: {len(times)} good polls in the last 24 hours, "
+          f"{len(gaps)} gaps, {len(duplicates)} duplicates")
     if last is not None:
         print(f"last good poll: {fmt_time(last)} ({(now - last) / 60:.0f} minutes ago)")
 
