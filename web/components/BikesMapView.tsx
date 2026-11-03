@@ -18,14 +18,32 @@ import {
   type PlaceTarget,
 } from "@/lib/neighborhoods";
 
-const END = 24 * 60;
+const DAYS = 1;
+const END = DAYS * 24 * 60;
 type Rgba = [number, number, number, number];
 const EMPTY: Rgba = [200, 36, 59, 235];
-const MID: Rgba = [142, 151, 159, 235];
 const FULL: Rgba = [31, 99, 180, 235];
 const lerp = (a: Rgba, b: Rgba, t: number): Rgba => a.map((v, k) => Math.round(v + (b[k] - v) * t)) as Rgba;
-const fillColor = (f: number) => (f < 0.5 ? lerp(EMPTY, MID, f / 0.5) : lerp(MID, FULL, (f - 0.5) / 0.5));
-const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.floor(m % 60)).padStart(2, "0")}`;
+
+// Fill-level color scale (fraction of docks holding a bike):
+//   empty (run out) -> red, then orange, yellow, and green when full (filling up).
+const FILL_STOPS: { at: number; c: Rgba }[] = [
+  { at: 0.0, c: [200, 36, 59, 235] }, // completely run out — red
+  { at: 0.25, c: [232, 120, 40, 235] }, // getting low — orange
+  { at: 0.5, c: [240, 200, 60, 235] }, // half — yellow
+  { at: 1.0, c: [38, 160, 85, 235] }, // full / filling up — green
+];
+const fillColor = (f: number): Rgba => {
+  const x = Math.max(0, Math.min(1, f));
+  for (let i = 1; i < FILL_STOPS.length; i++) {
+    const a = FILL_STOPS[i - 1], b = FILL_STOPS[i];
+    if (x <= b.at) return lerp(a.c, b.c, (x - a.at) / (b.at - a.at));
+  }
+  return FILL_STOPS[FILL_STOPS.length - 1].c;
+};
+const clock = (m: number) => `${String(Math.floor((m % (24 * 60)) / 60)).padStart(2, "0")}:${String(Math.floor(m % 60)).padStart(2, "0")}`;
+// Over a multi-day run, prefix the day number so the clock stays readable past midnight.
+const hhmm = (m: number) => (DAYS > 1 ? `Day ${Math.floor(m / (24 * 60)) + 1} ${clock(m)}` : clock(m));
 
 // A station is "at risk" when the Markov forecast says it will likely run out or
 // fill up within 30 minutes. This is the model's prediction, not the current count.
@@ -182,7 +200,9 @@ export default function BikesMapView({ token }: { token: string }) {
 
   useEffect(() => {
     if (!playing) return;
-    const id = setInterval(() => setMinute((m) => (m + 1 >= END ? (setPlaying(false), END - 1) : m + 1)), 1000 / 6);
+    // Advance faster on long runs so a 30-day simulation plays through in a reasonable time.
+    const perTick = Math.max(1, Math.round(END / (24 * 60)));
+    const id = setInterval(() => setMinute((m) => (m + perTick >= END ? (setPlaying(false), END - 1) : m + perTick)), 1000 / 6);
     return () => clearInterval(id);
   }, [playing]);
 
@@ -214,10 +234,11 @@ export default function BikesMapView({ token }: { token: string }) {
   }, [live, minute, poll, start, step]);
 
   // The model's dominant 30-min risk for a station right now: how big and what color the halo is.
+  // Run-out risk is red; fill-up risk is green (matching the full = green fill scale).
   const riskOf = (d: Row) => {
     const emptyRisk = d.pE, fullRisk = d.pF;
     const p = Math.max(emptyRisk, fullRisk);
-    const color: Rgba = emptyRisk >= fullRisk ? [200, 36, 59, 255] : [31, 99, 180, 255];
+    const color: Rgba = emptyRisk >= fullRisk ? [200, 36, 59, 255] : [38, 160, 85, 255];
     return { p, color };
   };
 
@@ -392,7 +413,7 @@ export default function BikesMapView({ token }: { token: string }) {
           </div>
           <div className="flex items-center justify-between">
             <dt className="flex items-center gap-1.5">
-              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgb(31,99,180)" }} />
+              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "rgb(38,160,85)" }} />
               Likely to fill up
             </dt>
             <dd className="font-semibold tabular-nums">{atRisk.full}</dd>
@@ -463,7 +484,7 @@ export default function BikesMapView({ token }: { token: string }) {
             />
             <AnalysisList
               title="Most likely to FILL UP (30 min)"
-              dot="rgb(31,99,180)"
+              dot="rgb(38,160,85)"
               rows={analysis.topFull}
               prob={(d) => d.pF}
               onPick={(d) => {
@@ -518,7 +539,7 @@ export default function BikesMapView({ token }: { token: string }) {
           <p className="mt-3 text-muted-foreground">Markov forecast from the {hhmm(poll)} poll (updates live):</p>
           <div className="mt-1 space-y-1.5">
             <RiskBar label="Runs out within 30 min" value={sel.pE} color="rgb(200,36,59)" />
-            <RiskBar label="Fills up within 30 min" value={sel.pF} color="rgb(31,99,180)" />
+            <RiskBar label="Fills up within 30 min" value={sel.pF} color="rgb(38,160,85)" />
           </div>
         </aside>
       )}
