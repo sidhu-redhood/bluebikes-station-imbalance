@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bluebikes station tracker: Markov model demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Basemap colours: CoolBoston's Mapbox Standard config (web/lib/mapConfig.ts). */
+  --land: #F4EFE4; --water: #1F4A6E; --water-ink: #A9C3D8;
+  --ink: #1C2630; --ink-2: #4A5866; --ink-3: #7B8794;
+  --surface: #FFFFFF; --panel: #FBF9F5; --line: #E4DED2;
+  --empty: #C8243B; --full: #1F63B4; --mid: #8E979F;
+  --focus: #1F63B4;
+  color-scheme: light;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --land: #2B2E31; --water: #10202E; --water-ink: #5E7C95;
+    --ink: #ECE8E0; --ink-2: #B9B4AA; --ink-3: #8B877F;
+    --surface: #1B1D20; --panel: #202326; --line: #34383C;
+    --empty: #F0566A; --full: #5A9CE8; --mid: #8A9096; --focus: #7FB3F0;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --land: #2B2E31; --water: #10202E; --water-ink: #5E7C95;
+  --ink: #ECE8E0; --ink-2: #B9B4AA; --ink-3: #8B877F;
+  --surface: #1B1D20; --panel: #202326; --line: #34383C;
+  --empty: #F0566A; --full: #5A9CE8; --mid: #8A9096; --focus: #7FB3F0;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: inherit; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--panel); color: var(--ink);
+  font: 400 15px/1.45 "Public Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+button, select, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.app { display: grid; grid-template-columns: minmax(0, 1fr) 390px; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; }
+header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
+header h1 { font-size: 17px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+header p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+.source { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); }
+.pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; background: var(--panel); white-space: nowrap; }
+.pill.real { border-color: var(--full); color: var(--full); }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.btn:hover { border-color: var(--ink-3); }
+
+.map-wrap { position: relative; min-height: 0; background: var(--water); overflow: hidden; touch-action: none; }
+#map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+#map.dragging { cursor: grabbing; }
+.map-tools { position: absolute; top: 12px; left: 12px; display: flex; flex-direction: column; gap: 8px; }
+.seg { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 2px; }
+.seg button { border: 0; background: transparent; padding: 5px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; color: var(--ink-2); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.zoom { display: inline-flex; flex-direction: column; width: 34px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.zoom button { border: 0; background: transparent; height: 32px; cursor: pointer; font-size: 18px; }
+.zoom button + button { border-top: 1px solid var(--line); }
+.legend { position: absolute; left: 12px; bottom: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 12.5px; color: var(--ink-2); max-width: calc(100% - 24px); }
+.legend .ramp { height: 8px; width: 190px; max-width: 100%; border-radius: 4px; margin: 5px 0 3px; }
+.legend .ends { display: flex; justify-content: space-between; gap: 12px; }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--surface); font-size: 12.5px; padding: 5px 8px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, calc(-100% - 12px)); display: none; }
+
+.timeline { grid-column: 1; border-top: 1px solid var(--line); background: var(--surface); padding: 10px 18px 12px; display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; align-items: center; }
+.clock { display: flex; align-items: baseline; gap: 12px; }
+.clock time { font-size: 44px; font-weight: 600; letter-spacing: -0.03em; line-height: 1; }
+.clock .poll { font-size: 12.5px; color: var(--ink-3); }
+.controls { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.play { width: 40px; height: 36px; border-radius: 8px; border: 0; background: var(--ink); color: var(--surface); cursor: pointer; display: grid; place-items: center; }
+.play svg { width: 16px; height: 16px; fill: currentColor; }
+.strip { position: relative; height: 74px; }
+.strip canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.strip input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: ew-resize; margin: 0; }
+.strip:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.metrics { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 26px; font-size: 13px; color: var(--ink-2); }
+.metrics b { color: var(--ink); font-weight: 600; font-size: 15px; margin-right: 4px; }
+.metrics .e b { color: var(--empty); } .metrics .f b { color: var(--full); }
+
+aside { grid-column: 2; grid-row: 2 / 4; border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 16px 18px 28px; }
+aside h2 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 0 0 8px; }
+.risk-list { list-style: none; margin: 0 0 20px; padding: 0; display: grid; gap: 2px; }
+.risk-list button { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; text-align: left; background: transparent; border: 0; border-radius: 7px; padding: 6px 8px; cursor: pointer; font-size: 13.5px; }
+.risk-list button:hover, .risk-list button[aria-current="true"] { background: var(--surface); }
+.risk-list .p { font-weight: 600; }
+.risk-list .p.e { color: var(--empty); } .risk-list .p.f { color: var(--full); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.card h3 { margin: 0; font-size: 17px; line-height: 1.25; }
+.card .kind { color: var(--ink-2); font-size: 13px; margin-top: 3px; }
+.now { display: flex; align-items: baseline; gap: 14px; margin: 14px 0 4px; }
+.now .n { font-size: 40px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
+.now .of { color: var(--ink-2); font-size: 14px; }
+.state { display: inline-block; font-size: 12.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; margin-left: 2px; }
+.state.e { background: color-mix(in srgb, var(--empty) 14%, transparent); color: var(--empty); }
+.state.f { background: color-mix(in srgb, var(--full) 14%, transparent); color: var(--full); }
+.risks { display: grid; grid-template-columns: auto 1fr auto; gap: 6px 10px; align-items: center; font-size: 13px; margin: 14px 0 4px; }
+.bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 4px; }
+.risks .v { font-weight: 600; min-width: 3.2em; text-align: right; }
+.chart-h { font-size: 13px; font-weight: 600; margin: 18px 0 2px; }
+.chart-sub { font-size: 12.5px; color: var(--ink-3); margin: 0 0 6px; }
+.chart { width: 100%; display: block; }
+details { margin-top: 16px; font-size: 13px; color: var(--ink-2); }
+summary { cursor: pointer; color: var(--ink); font-weight: 600; }
+.score { margin-top: 20px; font-size: 13px; color: var(--ink-2); }
+.score table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.score td, .score th { padding: 4px 0; text-align: left; border-bottom: 1px solid var(--line); font-weight: 400; }
+.score th { color: var(--ink-3); font-size: 12.5px; }
+.score td:not(:first-child), .score th:not(:first-child) { text-align: right; }
+.note { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
+.err { color: var(--empty); font-size: 13px; }
+.method { margin-top: 22px; font-size: 13px; color: var(--ink-2); }
+.method p { margin: 0 0 8px; max-width: 60ch; }
+.method code { font-size: 12.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 56vh auto auto; height: auto; }
+  header { flex-wrap: wrap; }
+  .source { margin-left: 0; }
+  aside { grid-column: 1; grid-row: auto; border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
+  .clock time { font-size: 34px; }
+  .timeline { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1>Bluebikes station tracker</h1>
+      <p>A Markov model of the bike count at each station, run over one weekday in Downtown Boston</p>
+    </div>
+    <div class="source">
+      <span id="sourcePill" class="pill">Demo rates</span>
+      <label class="btn" for="fileIn">Load bikes.json</label>
+      <input id="fileIn" type="file" accept=".json,application/json" hidden>
+    </div>
+  </header>
+
+  <div class="map-wrap" id="mapWrap">
+    <canvas id="map" aria-label="Map of Downtown Boston with Bluebikes stations. Use the station list to select one." role="img"></canvas>
+    <div class="map-tools">
+      <div class="seg" role="group" aria-label="Colour stations by">
+        <button type="button" data-mode="now" aria-pressed="true">Bikes now</button>
+        <button type="button" data-mode="risk" aria-pressed="false">Risk in 30 min</button>
+      </div>
+      <div class="zoom" role="group" aria-label="Zoom">
+        <button type="button" id="zin" aria-label="Zoom in">+</button>
+        <button type="button" id="zout" aria-label="Zoom out">−</button>
+      </div>
+    </div>
+    <div class="legend" id="legend" role="group" aria-label="Legend"></div>
+    <div class="tip" id="tip"></div>
+  </div>
+
+  <section class="timeline" aria-label="Simulated day">
+    <div>
+      <div class="clock"><time id="clock">05:00</time><span class="poll" id="poll">last poll 05:00</span></div>
+      <div class="controls">
+        <button class="play" id="play" type="button" aria-label="Play"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="playIcon" d="M3 1.5v13l11-6.5z"/></svg></button>
+        <select class="btn" id="speed" aria-label="Speed">
+          <option value="2">2 min/s</option>
+          <option value="6" selected>6 min/s</option>
+          <option value="20">20 min/s</option>
+        </select>
+        <button class="btn" id="newDay" type="button">New day</button>
+      </div>
+    </div>
+    <div class="strip">
+      <canvas id="strip" aria-hidden="true"></canvas>
+      <input id="scrub" type="range" min="300" max="1440" step="1" value="300" aria-label="Time of day">
+    </div>
+    <div class="metrics" aria-live="off">
+      <span class="e"><b id="mE">0</b>empty station-minutes</span>
+      <span class="f"><b id="mF">0</b>full station-minutes</span>
+      <span><b id="mP">0</b>riders found no bike</span>
+      <span><b id="mR">0</b>riders found no dock</span>
+    </div>
+  </section>
+
+  <aside aria-label="Station details">
+    <h2>Most likely to run out or fill up in the next 30 minutes</h2>
+    <ul class="risk-list" id="riskList"></ul>
+    <div class="card" id="card"></div>
+    <div class="score" id="score"></div>
+    <div class="method">
+      <h2>How the model works</h2>
+      <p>Each station’s state is its bike count, 0 to capacity. Within each clock hour, riders return bikes at one rate and take them at another, both estimated from trip history. That makes the count a birth–death Markov chain: up one when a bike comes back, down one when a bike leaves, with returns blocked at full and pickups blocked at empty.</p>
+      <p>The tracker reads each station every 10 minutes, as the planned GBFS polling would, and turns the hourly rates into a 10-minute transition matrix <code>P = exp(Q·10)</code>. Multiplying the current state through those matrices gives the forecast. Making “empty” an absorbing state gives the chance the station runs out at any moment before a later poll, not only at a poll.</p>
+      <p>The day itself is simulated rider by rider from the same rates, so the forecasts here are scored in the best case. The real test is scoring them against your own GBFS polls.</p>
+    </div>
+  </aside>
+</div>
+
+<script>
+// Station Markov model, browser mirror of pipeline/src/coolboston/bike_markov.py.
+// State b = bikes docked (0..C). Per clock hour: CTMC with returns at rate lamIn, pickups at lamOut
+// (bikes/hour). One poll step (10 min) is P = expm(Q dt), by uniformization.
+const Markov = (() => {
+  const HOURS = 24;
+
+  function generator(cap, lamIn, lamOut, absorbing = -1) {
+    const n = cap + 1, q = new Float64Array(n * n), a = lamIn / 60, d = lamOut / 60;
+    for (let b = 0; b < n; b++) {
+      if (b === absorbing) continue;
+      let out = 0;
+      if (b < cap) { q[b * n + b + 1] = a; out += a; }
+      if (b > 0) { q[b * n + b - 1] = d; out += d; }
+      q[b * n + b] = -out;
+    }
+    return q;
+  }
+
+  function matmul(x, y, n) {
+    const z = new Float64Array(n * n);
+    for (let i = 0; i < n; i++)
+      for (let k = 0; k < n; k++) {
+        const v = x[i * n + k];
+        if (v === 0) continue;
+        for (let j = 0; j < n; j++) z[i * n + j] += v * y[k * n + j];
+      }
+    return z;
+  }
+
+
+  function transition(q, n, minutes) {
+    let rate = 0;
+    for (let b = 0; b < n; b++) rate = Math.max(rate, -q[b * n + b]);
+    const p = new Float64Array(n * n);
+    if (rate === 0) { for (let b = 0; b < n; b++) p[b * n + b] = 1; return p; }
+    const u = new Float64Array(n * n);
+    for (let i = 0; i < n * n; i++) u[i] = q[i] / rate;
+    for (let b = 0; b < n; b++) u[b * n + b] += 1;
+    const lam = rate * minutes, kMax = Math.ceil(lam + 10 * Math.sqrt(lam) + 20);
+    let term = new Float64Array(n * n), total = 0, logW = -lam;
+    for (let b = 0; b < n; b++) term[b * n + b] = 1;
+    for (let k = 0; k <= kMax; k++) {
+      if (k > 0) logW += Math.log(lam) - Math.log(k); // log Poisson(k; lam), built up term by term
+    const w = Math.exp(logW);
+      for (let i = 0; i < n * n; i++) p[i] += w * term[i];
+      total += w;
+      if (1 - total < 1e-12 && k > lam) break;
+      term = matmul(term, u, n);
+    }
+    for (let b = 0; b < n; b++) {
+      let s = 0;
+      for (let j = 0; j < n; j++) s += p[b * n + j];
+      for (let j = 0; j < n; j++) p[b * n + j] /= s;
+    }
+    return p;
+  }
+
+  /** Precompute the 24 hourly poll matrices, plus absorbing-empty and absorbing-full versions. */
+  function compile(st, stepMin) {
+    const n = st.capacity + 1, mk = (abs) => Array.from({ length: HOURS }, (_, h) =>
+      transition(generator(st.capacity, st.ratesIn[h], st.ratesOut[h], abs), n, stepMin));
+    return { n, stepMin, P: mk(-1), Pe: mk(0), Pf: mk(st.capacity) };
+  }
+
+  const hourAt = (startMin, step, stepMin) => Math.floor((startMin + step * stepMin) / 60) % HOURS;
+
+  function propagate(mats, n, bikes, startMin, steps, stepMin) {
+    const rows = [new Float64Array(n)];
+    rows[0][bikes] = 1;
+    for (let t = 0; t < steps; t++) {
+      const m = mats[hourAt(startMin, t, stepMin)], prev = rows[t], next = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        const v = prev[i];
+        if (v === 0) continue;
+        for (let j = 0; j < n; j++) next[j] += v * m[i * n + j];
+      }
+      rows.push(next);
+    }
+    return rows;
+  }
+
+  const forecast = (c, bikes, startMin, steps) => propagate(c.P, c.n, bikes, startMin, steps, c.stepMin);
+  const hitEmpty = (c, bikes, startMin, steps) => propagate(c.Pe, c.n, bikes, startMin, steps, c.stepMin)[steps][0];
+  const hitFull = (c, bikes, startMin, steps) => propagate(c.Pf, c.n, bikes, startMin, steps, c.stepMin)[steps][c.n - 1];
+
+  function rng(seed) { // mulberry32
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /** Exact event-by-event day (Gillespie). bikes[k] = count at minute startMin + k. */
+  function simulate(st, bikes0, random, startMin, minutes) {
+    const cap = st.capacity, bikes = new Int16Array(minutes + 1);
+    const missedP = new Uint16Array(minutes + 1), missedR = new Uint16Array(minutes + 1);
+    let b = bikes0, t = startMin, filled = 0;
+    const end = startMin + minutes;
+    const recordUntil = (tm) => {
+      const stop = Math.min(Math.floor(tm - startMin), minutes);
+      while (filled <= stop) bikes[filled++] = b;
+    };
+    while (t < end) {
+      const h = Math.floor(t / 60) % HOURS, segEnd = Math.min(end, (Math.floor(t / 60) + 1) * 60);
+      const a = st.ratesIn[h] / 60, d = st.ratesOut[h] / 60, total = a + d;
+      for (;;) {
+        const tEv = total > 0 ? t - Math.log(1 - random()) / total : Infinity;
+        recordUntil(Math.min(tEv, segEnd) - 1e-9);
+        if (tEv >= segEnd) { t = segEnd; break; }
+        t = tEv;
+        const k = Math.min(Math.floor(t - startMin) + 1, minutes);
+        if (random() < a / total) { if (b < cap) b++; else missedR[k]++; }
+        else { if (b > 0) b--; else missedP[k]++; }
+      }
+    }
+    recordUntil(end);
+    return { bikes, missedP, missedR };
+  }
+
+  /** Long-run occupancy if one hour's rates held forever (truncated geometric). */
+  function stationary(st, h) {
+    const n = st.capacity + 1, a = st.ratesIn[h], d = st.ratesOut[h], pi = new Float64Array(n);
+    let s = 0;
+    for (let b = 0; b < n; b++) { pi[b] = d === 0 ? (b === n - 1 ? 1 : 0) : (a / d) ** b; s += pi[b]; }
+    for (let b = 0; b < n; b++) pi[b] /= s;
+    return pi;
+  }
+
+  return { HOURS, generator, transition, compile, forecast, hitEmpty, hitFull, rng, simulate, stationary };
+})();
+if (typeof module !== "undefined") module.exports = Markov;
+
+</script>
+<script>
+const DEMO = {"version":1,"stepMinutes":10,"startMinute":300,"source":{"kind":"saad-neu-cluster","month":"2026-08","weekdays":22,"radiusKm":1.2,"stations":42,"generated":"2026-11-03"},"stations":[{"id":"B32062","name":"Forsyth St at Huntington Ave","lat":42.34002,"lon":-71.090688,"capacity":15,"initialBikes":4,"ratesIn":[1.136,0.5,0.091,0.045,0.591,1.318,4.818,9.955,7.409,6.364,3.955,4.227,4.409,4.0,4.591,6.227,7.909,12.364,10.045,9.864,6.545,5.682,5.318,2.591],"ratesOut":[2.5,0.273,0.182,0.136,0.0,0.409,1.818,7.364,7.409,5.091,2.909,3.682,4.364,4.409,4.727,5.227,8.136,11.5,12.409,9.955,7.682,6.409,4.909,4.273],"neighborhood":"fenway","amNetFlow":6.864,"isAmDestination":true},{"id":"B32012","name":"Northeastern University - North Parking Lot","lat":42.341814,"lon":-71.090179,"capacity":15,"initialBikes":10,"ratesIn":[0.227,0.455,0.045,0.0,0.045,0.0,0.0,0.318,0.682,0.682,0.818,1.0,1.045,1.409,1.409,2.591,1.773,4.091,2.955,1.955,1.182,1.0,0.773,0.545],"ratesOut":[0.5,0.5,0.045,0.0,0.045,0.318,0.318,0.727,2.455,1.955,0.364,0.636,0.909,0.864,0.682,1.182,1.818,2.727,2.045,1.818,1.455,1.0,0.955,0.818],"neighborhood":"fenway","amNetFlow":-3.773,"isAmDestination":false},{"id":"B32009","name":"Fenway at Forsyth Way","lat":42.341022,"lon":-71.092105,"capacity":19,"initialBikes":9,"ratesIn":[0.5,0.136,0.0,0.0,0.0,0.0,0.5,1.091,1.545,1.818,1.318,2.045,1.273,1.182,1.409,2.409,2.864,4.682,3.045,2.364,1.5,0.773,0.5,0.545],"ratesOut":[0.409,0.045,0.091,0.045,0.045,0.182,0.318,1.455,1.136,1.136,0.864,1.0,0.864,0.818,1.045,1.045,1.591,2.0,2.455,2.455,1.636,0.591,1.545,0.773],"neighborhood":"fenway","amNetFlow":0.909,"isAmDestination":true},{"id":"Z32997","name":"Parker St at Huntington Ave","lat":42.338488,"lon":-71.092611,"capacity":19,"initialBikes":9,"ratesIn":[0.455,0.409,0.182,0.136,0.136,0.045,0.455,2.864,1.955,2.909,2.409,3.136,1.545,2.909,2.409,2.818,2.682,4.0,3.455,4.0,2.364,1.091,1.273,2.091],"ratesOut":[1.682,0.091,0.227,0.318,0.0,0.182,0.955,1.318,3.955,1.364,1.636,1.773,2.273,1.364,1.773,2.591,2.864,3.955,3.818,3.273,4.182,2.136,2.091,0.864],"neighborhood":"fenway","amNetFlow":0.591,"isAmDestination":true},{"id":"B32002","name":"Ruggles T Stop - Columbus Ave at Melnea Cass Blvd","lat":42.336244,"lon":-71.087986,"capacity":27,"initialBikes":12,"ratesIn":[0.727,0.318,0.227,0.091,0.091,1.545,1.409,6.545,8.364,8.455,5.364,4.545,4.227,3.591,3.409,6.773,7.182,8.864,7.227,5.591,3.818,2.318,2.545,1.773],"ratesOut":[1.455,0.409,0.091,0.045,0.0,0.182,1.909,6.818,10.0,5.136,3.182,2.591,4.364,2.818,3.091,5.773,7.091,9.636,9.455,5.955,5.273,3.682,3.818,2.045],"neighborhood":"roxbury","amNetFlow":0.909,"isAmDestination":true},{"id":"B32019","name":"New Edgerly Plaza - Westland Ave at Edgerly Rd","lat":42.343672,"lon":-71.08742,"capacity":16,"initialBikes":12,"ratesIn":[0.864,1.045,0.364,0.227,0.045,0.136,0.5,0.864,1.364,1.318,1.364,1.864,1.909,2.364,2.545,4.227,7.636,8.818,7.227,5.682,4.182,4.636,2.045,1.909],"ratesOut":[1.182,0.682,0.364,0.0,0.045,0.091,1.0,4.273,4.364,2.364,1.864,1.182,1.773,1.864,2.636,3.091,4.318,6.818,6.136,5.273,4.409,4.591,2.818,1.864],"neighborhood":"fenway","amNetFlow":-7.955,"isAmDestination":false},{"id":"C32063","name":"Mass Ave T Stop","lat":42.341356,"lon":-71.08337,"capacity":16,"initialBikes":11,"ratesIn":[0.5,0.273,0.0,0.136,0.0,0.045,0.818,1.955,3.091,1.682,1.091,1.682,2.182,2.409,2.545,4.0,6.091,8.364,5.773,4.818,3.182,2.5,2.364,1.091],"ratesOut":[0.5,0.091,0.091,0.091,0.045,0.318,1.545,4.182,6.045,2.273,1.455,1.864,2.136,1.818,2.273,2.455,3.955,5.591,5.227,4.909,2.864,2.818,1.818,1.364],"neighborhood":"roxbury","amNetFlow":-6.5,"isAmDestination":false},{"id":"B32005","name":"Christian Science Plaza - Massachusetts Ave at Westland Ave","lat":42.343666,"lon":-71.085824,"capacity":39,"initialBikes":24,"ratesIn":[1.727,1.591,0.955,0.364,0.0,0.364,2.182,3.318,5.136,3.773,3.409,3.5,4.455,4.136,5.227,6.818,7.227,12.818,10.727,9.318,8.409,7.136,3.909,3.091],"ratesOut":[1.818,1.773,0.955,0.409,0.318,0.636,2.045,5.955,10.773,5.364,4.091,4.318,4.773,4.364,5.318,7.5,7.409,9.727,10.091,9.909,7.091,5.909,6.0,3.273],"neighborhood":"back bay","amNetFlow":-9.727,"isAmDestination":false},{"id":"D32061","name":"Lenox St at Kendall St","lat":42.337595,"lon":-71.082551,"capacity":17,"initialBikes":11,"ratesIn":[0.591,0.182,0.182,0.0,0.045,0.0,0.227,0.227,1.818,0.727,0.409,0.5,0.773,0.636,0.5,1.182,1.136,2.636,2.864,1.955,1.818,2.136,1.091,1.545],"ratesOut":[0.455,0.227,0.136,0.0,0.045,0.045,0.864,1.545,2.682,2.136,1.5,1.091,0.955,0.5,0.773,0.545,1.864,1.591,1.591,1.682,1.318,1.136,0.864,0.682],"neighborhood":"roxbury","amNetFlow":-4.227,"isAmDestination":false},{"id":"B32001","name":"Fenway at Museum Rd","lat":42.3392,"lon":-71.096625,"capacity":21,"initialBikes":10,"ratesIn":[0.091,0.045,0.045,0.0,0.0,0.0,0.227,0.136,0.545,1.182,0.955,1.045,1.091,1.273,1.0,1.455,0.955,1.318,1.864,0.909,0.591,0.273,0.227,0.318],"ratesOut":[0.091,0.091,0.5,0.045,0.0,0.0,0.409,0.636,0.455,0.545,0.182,0.455,0.727,1.045,1.773,1.818,1.682,2.182,2.227,1.091,0.773,0.545,0.5,0.182],"neighborhood":"fenway","amNetFlow":0.045,"isAmDestination":true},{"id":"B32021","name":"Wentworth Institute of Technology - Huntington Ave at Vancouver St","lat":42.337586,"lon":-71.096271,"capacity":14,"initialBikes":7,"ratesIn":[0.364,0.545,0.136,0.273,0.0,0.136,0.045,0.182,0.364,0.182,0.545,0.591,0.773,0.955,0.864,1.091,0.909,1.182,1.318,1.409,0.636,0.591,0.727,0.409],"ratesOut":[0.227,0.227,0.045,0.0,0.0,0.091,0.273,0.727,0.318,0.136,0.682,0.591,0.773,0.909,0.773,0.682,1.0,1.591,1.182,1.227,0.727,1.0,0.545,0.5],"neighborhood":"fenway","amNetFlow":-0.682,"isAmDestination":false},{"id":"B32064","name":"Flat 9 at Whittier","lat":42.334204,"lon":-71.087676,"capacity":15,"initialBikes":8,"ratesIn":[0.273,0.045,0.182,0.0,0.091,0.045,0.0,0.136,0.273,0.182,0.182,0.318,0.318,0.364,0.227,0.818,0.591,1.227,1.045,0.773,1.227,0.636,0.364,0.455],"ratesOut":[0.318,0.045,0.136,0.0,0.045,0.091,0.409,0.318,0.227,0.136,0.227,0.045,0.364,0.227,0.045,0.455,0.773,0.455,0.773,0.864,0.818,0.773,0.136,0.273],"neighborhood":"roxbury","amNetFlow":-0.5,"isAmDestination":false},{"id":"C32056","name":"Tremont St at Northampton St","lat":42.338432,"lon":-71.08169,"capacity":19,"initialBikes":14,"ratesIn":[1.227,0.773,0.273,0.091,0.0,0.045,0.273,0.364,1.136,1.0,0.636,0.636,1.318,1.091,0.818,1.273,1.409,5.227,4.864,3.273,3.091,1.5,1.955,1.364],"ratesOut":[0.409,0.273,0.136,0.045,0.091,0.364,1.545,2.409,4.364,2.636,1.136,1.545,0.727,1.136,1.091,0.864,1.364,1.773,2.364,2.318,1.955,1.227,1.227,1.136],"neighborhood":"roxbury","amNetFlow":-8.182,"isAmDestination":false},{"id":"C32004","name":"Massachusetts Ave at Columbus Ave","lat":42.340783,"lon":-71.081255,"capacity":14,"initialBikes":11,"ratesIn":[0.318,0.5,0.182,0.091,0.091,0.227,0.591,1.864,2.182,1.864,1.636,1.636,1.727,2.455,2.636,3.364,4.955,9.091,5.591,5.955,3.182,1.818,1.818,1.0],"ratesOut":[0.636,0.318,0.318,0.182,0.0,1.136,3.364,4.864,4.091,1.909,1.909,1.545,1.636,1.636,1.591,3.364,3.364,5.364,5.636,4.318,2.5,1.227,1.818,1.545],"neighborhood":"south end","amNetFlow":-7.727,"isAmDestination":false},{"id":"B32072","name":"Prentiss St at Mindoro St","lat":42.333708,"lon":-71.093627,"capacity":16,"initialBikes":8,"ratesIn":[0.227,0.182,0.091,0.0,0.0,0.0,0.091,0.273,0.727,0.818,0.455,0.273,0.273,0.045,0.5,0.182,0.364,0.864,0.273,0.227,0.318,0.5,0.227,0.273],"ratesOut":[0.091,0.091,0.091,0.091,0.045,1.182,0.045,0.091,0.636,0.409,0.227,0.318,0.364,0.182,0.318,0.227,0.273,0.409,0.545,0.318,0.273,0.091,0.045,0.045],"neighborhood":"mission hill","amNetFlow":0.727,"isAmDestination":true},{"id":"B32059","name":"Whittier St Health Center","lat":42.332863,"lon":-71.092189,"capacity":19,"initialBikes":10,"ratesIn":[0.136,0.182,0.0,0.045,0.0,0.0,0.0,0.045,0.182,0.273,0.091,0.045,0.273,0.5,0.091,0.273,0.409,0.455,0.864,0.136,0.545,0.045,0.091,0.0],"ratesOut":[0.136,0.045,0.0,0.0,0.0,0.136,0.818,0.773,0.136,0.455,0.136,0.045,0.318,0.273,0.091,0.227,0.455,0.273,0.545,0.136,0.136,0.091,0.091,0.0],"neighborhood":"roxbury","amNetFlow":-1.682,"isAmDestination":false},{"id":"B32040","name":"Ipswich St at Van Ness St","lat":42.345809,"lon":-71.095485,"capacity":15,"initialBikes":10,"ratesIn":[1.682,0.682,0.818,0.091,0.0,0.545,0.136,0.5,2.318,1.864,1.5,1.545,2.0,2.409,3.409,4.727,6.955,8.0,6.409,4.682,3.864,4.091,3.455,1.727],"ratesOut":[1.091,0.818,0.364,0.409,0.136,0.318,1.409,1.818,4.318,3.318,2.455,2.409,1.773,1.727,2.455,3.273,4.318,5.364,4.636,5.364,5.136,6.591,4.773,2.818],"neighborhood":"fenway","amNetFlow":-6.045,"isAmDestination":false},{"id":"D32059","name":"Shawmut Ave at Lenox St","lat":42.335846,"lon":-71.080382,"capacity":19,"initialBikes":11,"ratesIn":[0.409,0.227,0.091,0.0,0.0,0.0,0.091,0.091,0.409,0.591,0.136,0.045,0.5,0.364,0.364,0.455,0.773,1.364,0.864,1.045,1.0,0.773,0.818,0.318],"ratesOut":[0.045,0.182,0.091,0.0,0.045,0.0,0.5,0.682,1.136,1.227,0.545,0.182,0.273,0.364,0.091,0.364,0.409,0.682,0.636,0.455,0.636,0.455,0.273,0.045],"neighborhood":"roxbury","amNetFlow":-2.364,"isAmDestination":false},{"id":"B32034","name":"Boylston St at Jersey St","lat":42.344651,"lon":-71.097325,"capacity":15,"initialBikes":11,"ratesIn":[0.909,0.955,0.273,0.273,0.182,0.682,1.182,2.909,3.773,2.727,2.455,3.773,4.727,4.409,5.773,8.045,7.591,12.136,11.045,6.818,5.773,3.818,3.364,1.909],"ratesOut":[1.545,0.636,0.682,0.091,0.409,1.136,1.955,4.5,6.227,3.5,2.682,2.909,3.955,4.182,4.409,5.955,7.818,9.364,9.5,7.182,5.273,6.409,4.545,2.273],"neighborhood":"fenway","amNetFlow":-5.591,"isAmDestination":false},{"id":"B32065","name":"Massachusetts Ave at Boylston St.","lat":42.34752,"lon":-71.088012,"capacity":24,"initialBikes":12,"ratesIn":[2.727,2.409,0.773,0.773,0.273,0.727,3.136,6.5,10.864,9.818,6.864,8.636,9.5,11.591,11.0,11.636,15.455,24.773,21.0,15.045,9.136,8.409,6.591,5.5],"ratesOut":[2.5,1.727,0.773,0.409,0.182,0.818,3.364,7.455,10.273,9.227,8.273,7.136,8.409,10.682,10.0,11.409,15.0,19.227,18.636,15.273,11.273,12.591,12.773,5.5],"neighborhood":"fenway","amNetFlow":0.0,"isAmDestination":false},{"id":"B32018","name":"Boylston St at Massachusetts Ave","lat":42.347406,"lon":-71.086784,"capacity":15,"initialBikes":7,"ratesIn":[0.455,0.455,0.045,0.045,0.045,0.136,0.682,1.045,2.5,1.864,1.136,1.091,1.273,1.773,3.5,1.227,3.273,4.545,7.773,5.045,2.5,1.318,1.091,0.409],"ratesOut":[1.455,0.273,0.045,0.0,0.045,0.136,0.364,1.136,2.682,1.409,1.773,1.318,1.409,1.364,1.818,2.227,2.636,4.045,4.955,3.909,3.227,2.909,3.773,1.409],"neighborhood":"back bay","amNetFlow":0.5,"isAmDestination":true},{"id":"B32033","name":"Huntington Ave at Mass Art","lat":42.336586,"lon":-71.09887,"capacity":15,"initialBikes":7,"ratesIn":[0.409,0.182,0.318,0.0,0.0,0.136,0.091,0.455,1.273,2.182,2.318,1.091,1.0,1.091,0.864,1.0,1.409,1.409,1.682,1.182,0.864,1.227,0.5,1.091],"ratesOut":[0.727,0.273,0.182,0.0,0.0,0.091,0.182,0.182,1.0,0.909,0.455,1.0,1.273,1.227,1.636,1.727,1.909,2.909,2.318,1.591,0.818,0.955,0.864,0.636],"amNetFlow":1.727,"isAmDestination":true},{"id":"B32069","name":"Huntington Ave at St. Alphonsus St","lat":42.336113,"lon":-71.099217,"capacity":16,"initialBikes":9,"ratesIn":[0.455,0.227,0.045,0.045,0.045,0.136,0.091,0.227,0.955,1.455,1.0,0.727,0.818,1.0,0.5,1.364,1.409,1.455,2.0,1.136,0.864,0.682,0.636,0.5],"ratesOut":[0.273,0.091,0.0,0.0,0.045,0.0,0.864,0.682,1.0,1.364,0.545,0.955,0.591,0.818,0.955,0.773,1.545,1.545,2.773,1.318,0.818,0.909,0.545,0.273],"neighborhood":"mission hill","amNetFlow":-1.182,"isAmDestination":false},{"id":"B32006","name":"Colleges of the Fenway - Fenway at Avenue Louis Pasteur","lat":42.340115,"lon":-71.100619,"capacity":15,"initialBikes":4,"ratesIn":[0.364,0.182,0.045,0.045,0.0,0.182,0.727,1.682,4.409,4.409,0.818,1.0,0.955,0.773,1.091,1.545,1.864,2.409,3.182,4.727,2.182,1.136,1.273,0.455],"ratesOut":[0.273,0.273,0.409,0.0,0.045,0.091,0.136,1.0,1.227,1.136,0.909,1.182,1.591,1.0,1.409,2.364,4.045,6.182,5.409,2.636,2.182,0.864,1.636,0.773],"amNetFlow":7.727,"isAmDestination":true},{"id":"C32005","name":"Washington St at Lenox St","lat":42.335099,"lon":-71.079038,"capacity":15,"initialBikes":9,"ratesIn":[0.273,0.136,0.0,0.136,0.0,0.0,0.091,0.182,0.591,0.273,0.227,0.136,0.318,0.636,0.409,0.545,0.864,2.136,0.955,0.727,0.682,1.091,0.864,0.455],"ratesOut":[0.045,0.0,0.0,0.0,0.0,0.045,0.727,0.864,1.182,1.0,0.318,0.364,0.227,0.273,0.318,0.273,0.727,1.227,0.682,0.727,0.409,0.409,0.227,0.045],"neighborhood":"roxbury","amNetFlow":-2.636,"isAmDestination":false},{"id":"B32070","name":"Smith St at Parker St","lat":42.332902,"lon":-71.096833,"capacity":19,"initialBikes":13,"ratesIn":[0.682,0.409,0.136,0.136,0.0,0.0,0.227,0.636,1.091,0.409,0.409,1.136,0.909,1.0,1.136,1.0,1.727,3.318,2.5,1.955,1.455,2.773,1.818,0.909],"ratesOut":[0.182,0.227,0.045,0.136,0.091,0.5,1.227,2.455,4.773,0.727,1.227,1.5,1.182,0.909,0.591,1.227,0.909,1.636,2.0,2.273,1.5,1.0,0.727,0.364],"neighborhood":"mission hill","amNetFlow":-6.818,"isAmDestination":false},{"id":"B32026","name":"Washington St at Melnea Cass Blvd","lat":42.332817,"lon":-71.081198,"capacity":19,"initialBikes":12,"ratesIn":[0.273,0.318,0.091,0.045,0.045,0.045,0.045,0.636,1.182,1.0,0.364,0.5,1.091,1.455,1.5,1.227,1.955,2.909,2.227,2.273,1.5,1.273,0.773,0.318],"ratesOut":[0.136,0.091,0.0,0.0,0.364,1.818,0.545,0.727,1.818,2.091,0.591,1.045,0.909,0.818,0.818,1.136,1.227,2.091,2.227,1.818,0.864,0.773,0.364,0.045],"neighborhood":"roxbury","amNetFlow":-2.318,"isAmDestination":false},{"id":"B32071","name":"St. Alphonsus St at Horadan Way","lat":42.335065,"lon":-71.099893,"capacity":15,"initialBikes":8,"ratesIn":[0.727,0.818,0.273,0.136,0.0,0.045,0.5,0.636,1.182,1.727,0.818,0.818,0.864,1.091,0.864,1.0,1.682,1.909,1.682,0.909,1.364,1.364,0.909,0.364],"ratesOut":[0.182,0.136,0.091,0.045,0.364,0.227,1.0,1.318,2.0,1.455,0.773,0.955,0.727,1.136,1.0,1.455,1.864,2.273,2.273,2.0,1.5,1.545,0.727,0.591],"neighborhood":"mission hill","amNetFlow":-1.727,"isAmDestination":false},{"id":"C32007","name":"Prudential Center - 101 Huntington Ave","lat":42.34652,"lon":-71.080658,"capacity":18,"initialBikes":4,"ratesIn":[0.227,0.636,0.045,0.045,0.091,0.636,1.591,4.909,12.727,5.591,3.136,1.955,3.091,1.636,2.591,3.455,4.591,6.682,4.909,4.136,2.227,2.364,1.136,0.409],"ratesOut":[0.909,0.636,0.318,0.091,0.0,0.318,0.818,3.227,7.5,3.818,2.091,1.955,2.682,2.455,4.0,3.455,7.318,10.227,6.0,4.636,2.727,2.409,1.364,0.818],"neighborhood":"back bay","amNetFlow":9.455,"isAmDestination":true},{"id":"A32009","name":"South End Library - Tremont St at W Newton St","lat":42.341332,"lon":-71.076847,"capacity":15,"initialBikes":14,"ratesIn":[0.364,0.136,0.136,0.045,0.0,0.136,0.909,1.136,0.909,0.955,0.909,1.273,1.727,3.182,2.5,2.591,3.818,6.5,6.091,3.5,2.818,1.909,1.682,0.773],"ratesOut":[0.136,0.045,0.0,0.0,0.273,1.955,4.0,4.182,4.773,1.136,0.773,1.0,1.182,1.409,1.864,1.909,3.091,4.227,4.364,2.5,1.864,1.409,1.045,0.727],"neighborhood":"south end","amNetFlow":-10.182,"isAmDestination":false},{"id":"B32000","name":"Newbury St at Hereford St","lat":42.348697,"lon":-71.08562,"capacity":23,"initialBikes":13,"ratesIn":[0.909,0.455,0.045,0.091,0.0,0.364,0.909,2.0,2.455,5.182,3.864,3.682,4.409,3.955,5.773,7.091,7.818,14.682,11.864,8.955,6.727,4.136,2.273,2.682],"ratesOut":[1.045,0.364,0.136,0.182,0.045,0.227,1.364,3.773,3.636,4.455,2.909,2.545,3.545,3.773,5.545,6.727,8.182,11.955,11.136,10.045,6.636,6.227,5.591,2.5],"neighborhood":"back bay","amNetFlow":-2.682,"isAmDestination":false},{"id":"C32072","name":"Washington St at Northampton St","lat":42.336259,"lon":-71.077564,"capacity":20,"initialBikes":13,"ratesIn":[0.818,0.318,0.091,0.136,0.364,0.545,0.182,1.5,1.727,2.045,1.545,1.136,1.5,1.5,1.273,2.545,2.318,6.727,4.5,4.182,4.0,2.636,3.136,1.455],"ratesOut":[0.5,0.273,0.136,0.091,0.0,0.591,1.045,2.955,6.227,1.773,1.364,1.818,1.773,1.409,1.455,2.182,3.455,3.818,4.091,3.636,2.318,1.682,1.136,0.864],"neighborhood":"roxbury","amNetFlow":-6.545,"isAmDestination":false},{"id":"C32001","name":"Roxbury Crossing T Stop - Columbus Ave at Tremont St","lat":42.331184,"lon":-71.095171,"capacity":23,"initialBikes":15,"ratesIn":[1.182,1.091,0.182,0.0,0.136,0.091,0.591,1.5,2.455,1.682,1.273,1.318,2.0,2.864,3.318,2.182,4.182,6.5,3.364,3.5,4.5,3.455,2.273,1.318],"ratesOut":[0.545,0.409,0.136,0.045,0.045,0.273,1.273,3.182,4.591,3.136,1.773,2.0,1.636,3.045,2.455,2.818,2.364,5.318,4.045,3.636,2.682,1.909,1.5,1.045],"neighborhood":"roxbury","amNetFlow":-5.955,"isAmDestination":false},{"id":"C32008","name":"Boylston St at Fairfield St","lat":42.348804,"lon":-71.082369,"capacity":19,"initialBikes":5,"ratesIn":[0.636,1.773,0.364,0.0,0.273,0.682,2.0,7.727,16.091,8.5,4.409,4.318,6.5,5.636,7.682,9.091,12.045,14.955,13.318,9.364,6.136,3.545,3.091,1.955],"ratesOut":[0.591,1.364,0.273,0.136,0.0,0.091,1.455,5.545,12.273,5.727,4.045,4.727,6.455,5.909,8.409,11.045,14.273,15.545,14.136,12.318,7.273,4.591,3.591,2.318],"neighborhood":"back bay","amNetFlow":9.318,"isAmDestination":true},{"id":"B32055","name":"Bartlett St at John Eliot Sq","lat":42.329463,"lon":-71.090158,"capacity":15,"initialBikes":10,"ratesIn":[0.273,0.227,0.318,0.091,0.045,0.0,0.045,0.045,0.227,0.091,0.091,0.091,0.727,0.5,0.591,0.818,0.773,1.636,1.136,1.364,1.5,0.818,0.727,0.682],"ratesOut":[0.091,0.091,0.0,0.0,0.0,0.273,0.545,1.045,1.773,1.136,0.636,0.682,0.864,0.591,0.955,0.455,0.773,1.227,1.136,0.682,0.773,0.545,0.955,0.318],"neighborhood":"roxbury","amNetFlow":-4.091,"isAmDestination":false},{"id":"B32020","name":"Burlington Ave at Brookline Ave","lat":42.345733,"lon":-71.100694,"capacity":15,"initialBikes":6,"ratesIn":[0.364,0.227,0.0,0.045,0.045,0.136,0.273,2.182,3.773,3.727,2.5,1.591,2.045,2.227,1.955,2.773,4.091,5.182,4.136,2.818,2.682,1.091,0.591,0.545],"ratesOut":[0.273,0.455,0.182,0.0,0.0,0.045,0.273,1.5,2.773,1.727,2.227,2.136,1.909,1.727,2.045,2.409,4.591,4.136,3.364,2.909,3.136,2.409,2.909,1.455],"neighborhood":"fenway","amNetFlow":3.682,"isAmDestination":true},{"id":"B32003","name":"HMS/HSPH - Avenue Louis Pasteur at Longwood Ave","lat":42.337417,"lon":-71.102861,"capacity":25,"initialBikes":1,"ratesIn":[0.045,0.091,0.045,0.0,0.045,0.864,6.409,8.182,9.273,4.045,1.409,1.727,3.818,3.045,3.045,2.455,2.045,2.727,2.818,1.5,1.682,0.818,0.591,0.364],"ratesOut":[0.364,0.273,0.136,0.136,0.0,0.0,0.591,2.045,2.136,1.909,1.5,3.182,4.091,5.045,4.318,8.773,10.227,8.773,4.591,2.727,1.773,1.091,1.227,0.864],"amNetFlow":21.227,"isAmDestination":true},{"id":"B32015","name":"Landmark Center - Brookline Ave at Park Dr","lat":42.343691,"lon":-71.102353,"capacity":15,"initialBikes":6,"ratesIn":[1.136,0.955,0.273,0.273,0.455,0.591,2.227,3.455,5.818,4.909,3.773,3.455,4.5,4.273,4.727,7.045,7.909,11.5,12.091,9.5,6.864,5.227,3.273,2.364],"ratesOut":[0.818,0.909,0.273,0.091,1.0,0.591,1.545,2.773,4.727,5.0,3.409,3.273,4.773,3.773,3.773,6.773,7.409,11.182,10.182,10.864,8.818,7.136,5.318,2.227],"neighborhood":"fenway","amNetFlow":2.364,"isAmDestination":true},{"id":"B32011","name":"Kenmore Square - 660 Beacon St","lat":42.34922,"lon":-71.095751,"capacity":15,"initialBikes":9,"ratesIn":[1.0,0.364,0.318,0.0,0.045,0.091,0.5,2.545,3.818,3.091,0.955,1.545,1.909,2.227,2.591,4.091,7.182,12.136,6.955,4.091,2.227,2.455,1.545,1.182],"ratesOut":[0.909,0.364,0.227,0.045,0.091,0.136,1.409,1.909,5.682,3.591,1.909,1.455,1.409,1.136,1.909,2.136,4.773,8.864,6.364,2.955,2.818,2.455,5.182,1.364],"neighborhood":"fenway","amNetFlow":-2.636,"isAmDestination":false},{"id":"B32010","name":"Kenmore Square","lat":42.348706,"lon":-71.097009,"capacity":27,"initialBikes":14,"ratesIn":[1.182,0.909,0.227,0.227,0.045,0.318,0.773,1.455,4.364,2.773,1.682,2.318,2.0,2.182,2.318,3.636,5.227,7.727,8.909,3.273,3.318,2.318,2.727,1.409],"ratesOut":[0.773,0.864,0.136,0.182,0.045,0.364,0.727,2.136,3.818,2.682,1.227,2.136,1.636,1.591,2.136,2.682,4.0,5.273,4.455,3.909,3.591,7.727,6.0,2.909],"neighborhood":"fenway","amNetFlow":0.0,"isAmDestination":false},{"id":"C32077","name":"Columbus Ave at W. Canton St","lat":42.344742,"lon":-71.076482,"capacity":19,"initialBikes":14,"ratesIn":[0.5,0.045,0.045,0.091,0.045,0.136,0.5,1.364,2.091,1.818,1.182,1.045,1.455,1.545,2.227,1.909,4.5,8.864,7.636,5.455,3.0,2.182,2.591,1.409],"ratesOut":[1.045,0.318,0.091,0.091,0.045,0.273,2.136,2.682,7.682,2.364,1.409,1.0,1.545,1.727,1.727,1.682,1.818,7.136,6.591,3.773,2.273,2.045,2.273,1.227],"neighborhood":"south end","amNetFlow":-9.091,"isAmDestination":false},{"id":"B32017","name":"Nubian Square - Bolling Building","lat":42.329843,"lon":-71.083866,"capacity":18,"initialBikes":9,"ratesIn":[0.273,0.136,0.136,0.045,0.045,0.045,0.5,0.409,1.136,1.409,0.864,0.864,1.227,1.682,1.636,1.364,1.636,1.864,1.5,1.409,1.545,1.227,0.773,0.591],"ratesOut":[0.409,0.182,0.045,0.0,0.0,0.091,0.455,0.591,1.818,1.5,1.455,1.409,1.909,1.045,1.909,1.727,1.909,1.864,1.273,0.909,0.773,0.773,0.5,0.364],"neighborhood":"roxbury","amNetFlow":-0.909,"isAmDestination":false}]};
+const LAND = {"origin":"EPSG:26986","full":[],"clip":[],"bbox":[230927.6874840528,895944.7868783781,236697.48796512597,901737.0961756753]};
+
+// ---------- State Plane (EPSG:26986), same math as CoolBoston web/lib/grid.ts ----------
+const SP = (() => {
+  const A = 6378137, F = 1 / 298.257222101, E = Math.sqrt(2 * F - F * F), r = (d) => d * Math.PI / 180;
+  const L1 = r(42 + 41 / 60), L2 = r(41 + 43 / 60), L0 = r(41), LON0 = r(-71.5), FE = 200000, FN = 750000;
+  const m = (p) => Math.cos(p) / Math.sqrt(1 - (E * Math.sin(p)) ** 2);
+  const t = (p) => Math.tan(Math.PI / 4 - p / 2) / ((1 - E * Math.sin(p)) / (1 + E * Math.sin(p))) ** (E / 2);
+  const N = (Math.log(m(L1)) - Math.log(m(L2))) / (Math.log(t(L1)) - Math.log(t(L2)));
+  const AF = A * m(L1) / (N * t(L1) ** N), RHO0 = AF * t(L0) ** N;
+  return (lng, lat) => { const rho = AF * t(r(lat)) ** N, th = N * (r(lng) - LON0); return [FE + rho * Math.sin(th), FN + RHO0 - rho * Math.cos(th)]; };
+})();
+
+const START = 300, END = 1440, HORIZON = 12; // 2 h of 10-minute polls
+const $ = (id) => document.getElementById(id);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmtT = (m) => { m = Math.min(m, 1439.99); const h = Math.floor(m / 60), mm = Math.floor(m % 60); return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`; };
+const pct = (p) => p < 0.005 ? "<1%" : p > 0.995 ? ">99%" : `${Math.round(p * 100)}%`;
+
+let model = null;     // { doc, stations: [{...st, x, y, c, role}] }
+let sim = null;       // { traces, emptyCount, fullCount, cumE, cumF, cumP, cumR }
+let minute = START, playing = false, selected = 0, colorMode = "now";
+let fcCache = { poll: -1, list: [] };
+let seed = 4100;
+
+// ---------- data ----------
+function parseDoc(doc) {
+  const fail = (msg) => { throw new Error(`bikes.json: ${msg}`); };
+  if (!doc || doc.version !== 1) fail("version must be 1 (write it with coolboston.build_bikes)");
+  if (!Array.isArray(doc.stations) || !doc.stations.length) fail("no stations");
+  const keys = ["id", "name", "lat", "lon", "capacity", "initialBikes", "ratesIn", "ratesOut"];
+  doc.stations.forEach((s, i) => {
+    const w = `stations[${i}]`;
+    for (const k of keys) if (!(k in s)) fail(`${w}: missing "${k}"`);
+    if (!Number.isInteger(s.capacity) || s.capacity < 1 || s.capacity > 120) fail(`${w}.capacity must be an integer 1..120`);
+    if (!(s.initialBikes >= 0 && s.initialBikes <= s.capacity)) fail(`${w}.initialBikes outside 0..capacity`);
+    for (const k of ["ratesIn", "ratesOut"])
+      if (!Array.isArray(s[k]) || s[k].length !== 24 || !s[k].every((x) => Number.isFinite(x) && x >= 0)) fail(`${w}.${k} must be 24 non-negative numbers`);
+  });
+  return doc;
+}
+
+function role(st) {
+  const sum = (a) => a.slice(6, 10).reduce((x, y) => x + y, 0);
+  const inn = sum(st.ratesIn), out = sum(st.ratesOut);
+  if (out > 1.3 * inn) return "Empties in the morning rush";
+  if (inn > 1.3 * out) return "Fills in the morning rush";
+  return "Roughly balanced through the day";
+}
+
+function loadModel(doc) {
+  parseDoc(doc);
+  const step = doc.stepMinutes || 10;
+  const stations = doc.stations.map((s) => {
+    const [x, y] = SP(s.lon, s.lat);
+    return { ...s, x, y, c: Markov.compile(s, step), role: role(s) };
+  });
+  model = { doc, stations, step };
+  const pill = $("sourcePill"), src = doc.source || {};
+  pill.textContent = src.kind === "bluebikes-trips" ? `Rates from trips, ${String(src.month).slice(0, 4)}-${String(src.month).slice(4)}` : "Demo rates";
+  pill.classList.toggle("real", src.kind === "bluebikes-trips");
+  fitView();
+  newDay(seed);
+}
+
+// ---------- simulation ----------
+function newDay(s) {
+  const random = Markov.rng(s), mins = END - START, S = model.stations;
+  const traces = S.map((st) => Markov.simulate(st, st.initialBikes, random, START, mins));
+  const emptyCount = new Uint16Array(mins + 1), fullCount = new Uint16Array(mins + 1);
+  const cumE = new Float64Array(mins + 1), cumF = new Float64Array(mins + 1), cumP = new Uint32Array(mins + 1), cumR = new Uint32Array(mins + 1);
+  for (let k = 0; k <= mins; k++) {
+    let e = 0, f = 0, p = 0, r = 0;
+    traces.forEach((tr, i) => { const b = tr.bikes[k]; if (b === 0) e++; else if (b === S[i].capacity) f++; p += tr.missedP[k]; r += tr.missedR[k]; });
+    emptyCount[k] = e; fullCount[k] = f;
+    if (k > 0) { cumE[k] = cumE[k - 1] + emptyCount[k - 1]; cumF[k] = cumF[k - 1] + fullCount[k - 1]; cumP[k] = cumP[k - 1] + p; cumR[k] = cumR[k - 1] + r; }
+  }
+  sim = { traces, emptyCount, fullCount, cumE, cumF, cumP, cumR };
+  fcCache.poll = -1;
+  scoreForecasts();
+  setMinute(START);
+}
+
+const bikesAt = (i, m) => sim.traces[i].bikes[Math.min(Math.max(Math.round(m) - START, 0), END - START)];
+const pollOf = (m) => Math.max(START, Math.floor(m / model.step) * model.step);
+
+function forecasts(poll) {
+  if (fcCache.poll === poll) return fcCache.list;
+  fcCache = { poll, list: model.stations.map((st, i) => {
+    const b = bikesAt(i, poll), k = Math.round(30 / model.step);
+    return { i, b, pE: Markov.hitEmpty(st.c, b, poll, k), pF: Markov.hitFull(st.c, b, poll, k) };
+  }) };
+  return fcCache.list;
+}
+
+/** Brier score of the 30-minute run-out / fill-up warnings over the whole simulated day. */
+function scoreForecasts() {
+  const k = Math.round(30 / model.step), rows = { e: [], f: [] };
+  model.stations.forEach((st, i) => {
+    const tr = sim.traces[i].bikes;
+    for (let poll = START; poll + 30 <= END; poll += model.step) {
+      const b = tr[poll - START];
+      let hitE = 0, hitF = 0;
+      for (let m = poll; m <= poll + 30; m++) { const v = tr[m - START]; if (v === 0) hitE = 1; if (v === st.capacity) hitF = 1; }
+      rows.e.push([Markov.hitEmpty(st.c, b, poll, k), hitE]);
+      rows.f.push([Markov.hitFull(st.c, b, poll, k), hitF]);
+    }
+  });
+  const brier = (r) => r.reduce((s, [p, o]) => s + (p - o) ** 2, 0) / r.length;
+  const base = (r) => { const m = r.reduce((s, [, o]) => s + o, 0) / r.length; return r.reduce((s, [, o]) => s + (m - o) ** 2, 0) / r.length; };
+  const out = ["e", "f"].map((key) => ({ key, model: brier(rows[key]), base: base(rows[key]), n: rows[key].length }));
+  $("score").innerHTML = `<h2>How good were today’s 30-minute warnings?</h2>
+    <table><thead><tr><th>Brier score (lower is better)</th><th>Markov</th><th>Base rate</th><th>Skill</th></tr></thead><tbody>
+    ${out.map((o) => `<tr><td>${o.key === "e" ? "Runs out" : "Fills up"}</td><td>${o.model.toFixed(3)}</td><td>${o.base.toFixed(3)}</td><td>${o.base > 0 ? Math.round((1 - o.model / o.base) * 100) + "%" : "n/a"}</td></tr>`).join("")}
+    </tbody></table>
+    <p class="note">${out[0].n.toLocaleString()} warnings per row, one per station per poll. “Base rate” always predicts the day’s average frequency. Skill is the share of its error the model removes.</p>`;
+}
+
+// ---------- map ----------
+const mapCv = $("map"), mctx = mapCv.getContext("2d");
+let view = { cx: 0, cy: 0, s: 0.2 }, W = 0, H = 0, DPR = 1, landPath = null, landCv = null, landKey = "";
+
+function buildLandPath() {
+  const p = new Path2D();
+  for (const [i, j] of LAND.full) p.rect(i * 100, j * 100, 100, 100);
+  for (const [i, j, polys] of LAND.clip)
+    for (const poly of polys) for (const ring of poly) {
+      ring.forEach(([dx, dy], k) => k ? p.lineTo(i * 100 + dx, j * 100 + dy) : p.moveTo(i * 100 + dx, j * 100 + dy));
+      p.closePath();
+    }
+  landPath = p;
+}
+
+const LABELS = [
+  ["Back Bay", 42.3503, -71.0812], ["South End", 42.3405, -71.0735], ["Downtown", 42.3548, -71.0585],
+  ["Beacon Hill", 42.3588, -71.0672], ["North End", 42.3652, -71.0545], ["Seaport", 42.3492, -71.0425],
+  ["South Boston", 42.3345, -71.0470], ["Fenway", 42.3440, -71.0975], ["West End", 42.3655, -71.0650],
+  ["Charlestown", 42.3760, -71.0610], ["East Boston", 42.3700, -71.0360],
+].map(([n, lat, lon]) => { const [x, y] = SP(lon, lat); return { n, x, y }; });
+const WATER_LABELS = [["Charles River", 42.3585, -71.0800], ["Boston Harbor", 42.3570, -71.0430], ["Cambridge, outside the land grid", 42.3640, -71.0905]]
+  .map(([n, lat, lon]) => { const [x, y] = SP(lon, lat); return { n, x, y }; });
+
+function fitView() {
+  const S = model.stations, xs = S.map((s) => s.x), ys = S.map((s) => s.y);
+  const pad = 380, x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad, y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;
+  resize();
+  view.cx = (x0 + x1) / 2; view.cy = (y0 + y1) / 2;
+  view.s = Math.min(W / (x1 - x0), H / (y1 - y0));
+  draw();
+}
+
+function resize() {
+  const r = mapCv.getBoundingClientRect();
+  DPR = Math.min(window.devicePixelRatio || 1, 2); W = r.width; H = r.height;
+  mapCv.width = Math.round(W * DPR); mapCv.height = Math.round(H * DPR);
+  landKey = "";
+}
+
+const toScreen = (x, y) => [(x - view.cx) * view.s + W / 2, -(y - view.cy) * view.s + H / 2];
+const toWorld = (px, py) => [(px - W / 2) / view.s + view.cx, -(py - H / 2) / view.s + view.cy];
+
+function drawLand() {
+  const key = `${view.cx}|${view.cy}|${view.s}|${W}|${H}|${css("--land")}`;
+  if (key === landKey) return;
+  landKey = key;
+  landCv = landCv || document.createElement("canvas");
+  landCv.width = mapCv.width; landCv.height = mapCv.height;
+  const c = landCv.getContext("2d");
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.fillStyle = css("--water"); c.fillRect(0, 0, landCv.width, landCv.height);
+  c.setTransform(DPR * view.s, 0, 0, -DPR * view.s, DPR * (W / 2 - view.cx * view.s), DPR * (H / 2 + view.cy * view.s));
+  c.fillStyle = css("--land"); c.strokeStyle = css("--land"); c.lineWidth = 1.6 / view.s;
+  c.fill(landPath, "evenodd"); c.stroke(landPath);
+  c.setTransform(DPR, 0, 0, DPR, 0, 0);
+  c.textAlign = "center"; c.textBaseline = "middle";
+  const fs = Math.max(11, Math.min(14, view.s * 55));
+  c.font = `600 ${fs}px "Public Sans", sans-serif`; c.fillStyle = css("--ink-3");
+  for (const l of LABELS) { const [px, py] = toScreen(l.x, l.y); c.fillText(l.n, px, py); }
+  c.font = `italic 400 ${fs - 1}px "Public Sans", sans-serif`; c.fillStyle = css("--water-ink");
+  for (const l of WATER_LABELS) { const [px, py] = toScreen(l.x, l.y); c.fillText(l.n, px, py); }
+}
+
+function mix(a, b, t) {
+  const p = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
+  const A = p(a), B = p(b);
+  return `rgb(${A.map((v, k) => Math.round(v + (B[k] - v) * t)).join(",")})`;
+}
+
+function stationColor(i, fc) {
+  const st = model.stations[i];
+  if (colorMode === "now") {
+    const f = bikesAt(i, minute) / st.capacity;
+    return f < 0.5 ? mix(css("--empty"), css("--mid"), f / 0.5) : mix(css("--mid"), css("--full"), (f - 0.5) / 0.5);
+  }
+  const { pE, pF } = fc[i];
+  return pE >= pF ? mix(css("--mid"), css("--empty"), Math.min(1, pE)) : mix(css("--mid"), css("--full"), Math.min(1, pF));
+}
+
+function stationRadius(st) { return Math.max(4, Math.min(16, Math.sqrt(st.capacity) * 1.25 * Math.sqrt(view.s / 0.12))); }
+
+function draw() {
+  if (!model || !sim) return;
+  drawLand();
+  mctx.setTransform(1, 0, 0, 1, 0, 0);
+  mctx.drawImage(landCv, 0, 0);
+  mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const fc = forecasts(pollOf(minute)), surface = css("--surface"), ink = css("--ink");
+  model.stations.forEach((st, i) => {
+    const [px, py] = toScreen(st.x, st.y), r = stationRadius(st), b = bikesAt(i, minute);
+    mctx.beginPath(); mctx.arc(px, py, r, 0, 2 * Math.PI);
+    mctx.fillStyle = stationColor(i, fc); mctx.fill();
+    mctx.lineWidth = 1.5; mctx.strokeStyle = surface; mctx.stroke();
+    if (b === 0 || b === st.capacity) { // a state, not just a colour: empty gets a hollow centre, full a dot
+      mctx.beginPath(); mctx.arc(px, py, r * 0.45, 0, 2 * Math.PI);
+      if (b === 0) { mctx.fillStyle = surface; mctx.fill(); }
+      else { mctx.lineWidth = 2; mctx.strokeStyle = surface; mctx.stroke(); }
+    }
+    if (i === selected) { mctx.beginPath(); mctx.arc(px, py, r + 4, 0, 2 * Math.PI); mctx.lineWidth = 2.5; mctx.strokeStyle = ink; mctx.stroke(); }
+  });
+}
+
+function legend() {
+  const e = css("--empty"), m = css("--mid"), f = css("--full");
+  $("legend").innerHTML = colorMode === "now"
+    ? `Bikes as a share of docks<div class="ramp" style="background:linear-gradient(90deg,${e},${m},${f})"></div><div class="ends"><span>0% (hollow: empty)</span><span>100% (inner ring: full)</span></div>`
+    : `Chance of running out (red) or filling up (blue) before the poll 30 minutes ahead<div class="ramp" style="background:linear-gradient(90deg,${e},${m},${f})"></div><div class="ends"><span>Run out 100%</span><span>0%</span><span>Fill up 100%</span></div>`;
+}
+
+function hitTest(px, py) {
+  let best = -1, bd = Infinity;
+  model.stations.forEach((st, i) => { const [x, y] = toScreen(st.x, st.y), d = Math.hypot(x - px, y - py); if (d < stationRadius(st) + 6 && d < bd) { bd = d; best = i; } });
+  return best;
+}
+
+// pan / zoom / select
+let drag = null;
+mapCv.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy, moved: false }; mapCv.setPointerCapture(e.pointerId); });
+mapCv.addEventListener("pointermove", (e) => {
+  const r = mapCv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  if (drag) {
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.hypot(dx, dy) > 3) { drag.moved = true; mapCv.classList.add("dragging"); }
+    view.cx = drag.cx - dx / view.s; view.cy = drag.cy + dy / view.s; draw(); $("tip").style.display = "none"; return;
+  }
+  const i = hitTest(px, py), tip = $("tip");
+  if (i < 0) { tip.style.display = "none"; mapCv.style.cursor = ""; return; }
+  const st = model.stations[i];
+  tip.textContent = `${st.name}: ${bikesAt(i, minute)} of ${st.capacity}`;
+  tip.style.left = `${px}px`; tip.style.top = `${py}px`; tip.style.display = "block"; mapCv.style.cursor = "pointer";
+});
+mapCv.addEventListener("pointerup", (e) => {
+  const r = mapCv.getBoundingClientRect();
+  if (drag && !drag.moved) { const i = hitTest(e.clientX - r.left, e.clientY - r.top); if (i >= 0) select(i); }
+  drag = null; mapCv.classList.remove("dragging");
+});
+mapCv.addEventListener("pointerleave", () => { $("tip").style.display = "none"; });
+function zoomAt(f, px = W / 2, py = H / 2) {
+  const [wx, wy] = toWorld(px, py);
+  view.s = Math.max(0.03, Math.min(1.5, view.s * f));
+  view.cx = wx - (px - W / 2) / view.s; view.cy = wy + (py - H / 2) / view.s; draw();
+}
+mapCv.addEventListener("wheel", (e) => { e.preventDefault(); const r = mapCv.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+$("zin").onclick = () => zoomAt(1.4); $("zout").onclick = () => zoomAt(1 / 1.4);
+document.querySelectorAll(".seg button").forEach((b) => b.onclick = () => {
+  colorMode = b.dataset.mode;
+  document.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  legend(); draw();
+});
+
+// ---------- timeline strip ----------
+const stripCv = $("strip"), sctx = stripCv.getContext("2d");
+function drawStrip() {
+  const r = stripCv.getBoundingClientRect(), dpr = DPR;
+  if (stripCv.width !== Math.round(r.width * dpr)) { stripCv.width = Math.round(r.width * dpr); stripCv.height = Math.round(r.height * dpr); }
+  const w = r.width, h = r.height, mid = h / 2 - 4, n = model.stations.length;
+  sctx.setTransform(dpr, 0, 0, dpr, 0, 0); sctx.clearRect(0, 0, w, h);
+  const X = (m) => (m - START) / (END - START) * w, scale = (mid - 6) / Math.max(4, Math.ceil(n * 0.4));
+  const area = (arr, sign, color) => {
+    sctx.beginPath(); sctx.moveTo(0, mid);
+    for (let k = 0; k < arr.length; k += 2) sctx.lineTo(X(START + k), mid - sign * arr[k] * scale);
+    sctx.lineTo(w, mid); sctx.closePath(); sctx.fillStyle = color; sctx.globalAlpha = 0.85; sctx.fill(); sctx.globalAlpha = 1;
+  };
+  area(sim.fullCount, 1, css("--full")); area(sim.emptyCount, -1, css("--empty"));
+  sctx.fillStyle = css("--line"); sctx.fillRect(0, mid, w, 1);
+  sctx.fillStyle = css("--ink-3"); sctx.font = `400 11px "Public Sans", sans-serif`; sctx.textBaseline = "alphabetic";
+  for (let hr = 6; hr <= 24; hr += 3) { const x = X(hr * 60); sctx.fillRect(x, mid + 1, 1, 4); sctx.textAlign = hr === 24 ? "right" : "center"; sctx.fillText(hr === 24 ? "24:00" : `${String(hr).padStart(2, "0")}:00`, x, h - 2); }
+  sctx.textAlign = "left"; sctx.fillStyle = css("--full"); sctx.fillText("stations full", 4, 11);
+  sctx.fillStyle = css("--empty"); sctx.fillText("stations empty", 4, mid + 17);
+  const x = X(minute); sctx.fillStyle = css("--ink"); sctx.fillRect(x - 1, 0, 2, h - 14);
+}
+
+// ---------- station card ----------
+function drawFan(cv, i, poll) {
+  const st = model.stations[i], n = st.capacity + 1, dpr = DPR, w = cv.clientWidth, h = 150;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.height = `${h}px`;
+  const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const past = 60, fut = HORIZON * model.step, L = 26, R = w - 6, T = 6, B = h - 20;
+  const X = (dm) => L + (dm + past) / (past + fut) * (R - L), Y = (b) => B - b / st.capacity * (B - T);
+  const rows = Markov.forecast(st.c, bikesAt(i, poll), poll, HORIZON), full = css("--full");
+  for (let t = 1; t <= HORIZON; t++) {
+    if (poll + t * model.step > END) break;
+    const x0 = X((t - 1) * model.step), x1 = X(t * model.step), mx = Math.max(...rows[t]);
+    for (let b = 0; b < n; b++) {
+      const p = rows[t][b]; if (p < 1e-4) continue;
+      c.globalAlpha = Math.min(1, Math.sqrt(p / mx)) * 0.75; c.fillStyle = full;
+      const y0 = Y(b + 0.5), y1 = Y(b - 0.5); c.fillRect(x0 + 0.5, Math.max(T, y0), x1 - x0 - 1, Math.min(B, y1) - Math.max(T, y0));
+    }
+  }
+  c.globalAlpha = 1;
+  // expected value
+  c.beginPath(); rows.forEach((r, t) => { if (poll + t * model.step > END) return; const m = r.reduce((s, v, b) => s + v * b, 0); t ? c.lineTo(X(t * model.step), Y(m)) : c.moveTo(X(0), Y(m)); });
+  c.setLineDash([4, 3]); c.strokeStyle = css("--ink"); c.lineWidth = 1.5; c.stroke(); c.setLineDash([]);
+  // observed past
+  c.beginPath();
+  for (let dm = -past; dm <= Math.min(0, minute - poll); dm++) { const m = poll + dm; if (m < START) continue; const y = Y(bikesAt(i, m)); c.lineTo(X(dm), y); }
+  c.strokeStyle = css("--ink"); c.lineWidth = 2; c.stroke();
+  // axes
+  c.fillStyle = css("--line"); c.fillRect(L, B, R - L, 1); c.fillRect(X(0), T, 1, B - T);
+  c.fillStyle = css("--ink-3"); c.font = `400 11px "Public Sans", sans-serif`; c.textAlign = "right"; c.textBaseline = "middle";
+  c.fillText(String(st.capacity), L - 5, Y(st.capacity)); c.fillText("0", L - 5, Y(0));
+  c.textAlign = "center"; c.textBaseline = "alphabetic";
+  [[-60, "−1 h"], [0, `poll ${fmtT(poll)}`], [60, "+1 h"], [120, "+2 h"]].forEach(([dm, s]) => c.fillText(s, Math.min(R - 16, X(dm)), h - 4));
+}
+
+function drawRates(cv, i) {
+  const st = model.stations[i], dpr = DPR, w = cv.clientWidth, h = 96;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.height = `${h}px`;
+  const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const mx = Math.max(1, ...st.ratesIn, ...st.ratesOut), L = 2, R = w - 2, mid = (h - 14) / 2, bw = (R - L) / 24;
+  const hr = Math.floor(minute / 60) % 24;
+  c.fillStyle = css("--panel"); c.fillRect(L + hr * bw, 0, bw, h - 14);
+  for (let k = 0; k < 24; k++) {
+    const a = st.ratesIn[k] / mx * (mid - 2), d = st.ratesOut[k] / mx * (mid - 2);
+    c.fillStyle = css("--full"); c.fillRect(L + k * bw + 1, mid - a, bw - 2, a);
+    c.fillStyle = css("--empty"); c.fillRect(L + k * bw + 1, mid, bw - 2, d);
+  }
+  c.fillStyle = css("--ink-3"); c.font = `400 11px "Public Sans", sans-serif`; c.textAlign = "center";
+  [0, 6, 12, 18].forEach((k) => c.fillText(String(k).padStart(2, "0"), L + (k + 0.5) * bw, h - 2));
+}
+
+function drawMatrix(cv, i) {
+  const st = model.stations[i], n = st.capacity + 1, dpr = DPR, size = Math.min(cv.clientWidth, 260);
+  cv.width = Math.round(size * dpr); cv.height = Math.round(size * dpr); cv.style.height = `${size}px`; cv.style.width = `${size}px`;
+  const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const P = st.c.P[Math.floor(minute / 60) % 24], cell = size / n, ink = css("--ink");
+  c.fillStyle = css("--surface"); c.fillRect(0, 0, size, size);
+  for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
+    const p = P[a * n + b]; if (p < 1e-3) continue;
+    c.globalAlpha = Math.min(1, Math.sqrt(p)); c.fillStyle = ink;
+    c.fillRect(b * cell, a * cell, Math.ceil(cell), Math.ceil(cell));
+  }
+  c.globalAlpha = 1;
+}
+
+let cardBuiltFor = -1;
+function renderCard() {
+  const i = selected, st = model.stations[i], poll = pollOf(minute), b = bikesAt(i, minute);
+  const fc = forecasts(poll)[i], k60 = Math.round(60 / model.step), b0 = bikesAt(i, poll);
+  const e60 = Markov.hitEmpty(st.c, b0, poll, k60), f60 = Markov.hitFull(st.c, b0, poll, k60);
+  const state = b === 0 ? `<span class="state e">Empty</span>` : b === st.capacity ? `<span class="state f">Full</span>` : "";
+  if (cardBuiltFor !== i) {
+    $("card").innerHTML = `<h3 id="cName"></h3><div class="kind" id="cKind"></div>
+      <div class="now"><span class="n" id="cN"></span><span class="of" id="cOf"></span></div>
+      <div class="risks" id="cRisks"></div>
+      <div class="chart-h">Forecast from the last poll</div>
+      <p class="chart-sub">Line: observed count. Shading: chance of each count at later polls. Dashes: expected count.</p>
+      <canvas class="chart" id="cFan"></canvas>
+      <div class="chart-h">Hourly rates, weekday</div>
+      <p class="chart-sub">Bikes returned per hour (blue, up) and taken (red, down). Shaded: this hour.</p>
+      <canvas class="chart" id="cRates"></canvas>
+      <details><summary>Transition matrix for this hour</summary>
+        <p class="chart-sub">Row: bikes at one poll. Column: bikes at the next. Stronger shading is likelier. Each row sums to 1.</p>
+        <canvas id="cMat"></canvas><p class="note" id="cMatNote"></p></details>`;
+    cardBuiltFor = i;
+  }
+  $("cName").textContent = st.name;
+  $("cKind").textContent = `${st.role}. ${st.capacity} docks.`;
+  $("cN").innerHTML = `${b}`;
+  $("cOf").innerHTML = `bikes, ${st.capacity - b} open docks ${state}`;
+  const bar = (p, cls) => `<div class="bar"><i style="width:${(p * 100).toFixed(1)}%;background:var(--${cls})"></i></div>`;
+  $("cRisks").innerHTML = `
+    <span>Runs out within 30 min</span>${bar(fc.pE, "empty")}<span class="v">${pct(fc.pE)}</span>
+    <span>Runs out within 1 h</span>${bar(e60, "empty")}<span class="v">${pct(e60)}</span>
+    <span>Fills up within 30 min</span>${bar(fc.pF, "full")}<span class="v">${pct(fc.pF)}</span>
+    <span>Fills up within 1 h</span>${bar(f60, "full")}<span class="v">${pct(f60)}</span>`;
+  drawFan($("cFan"), i, poll);
+  drawRates($("cRates"), i);
+  if ($("cMat").closest("details").open) drawMatrix($("cMat"), i);
+  const hr = Math.floor(minute / 60) % 24;
+  $("cMatNote").textContent = `${String(hr).padStart(2, "0")}:00 to ${String((hr + 1) % 24).padStart(2, "0")}:00: ${st.ratesIn[hr].toFixed(1)} returns and ${st.ratesOut[hr].toFixed(1)} pickups an hour. ${st.capacity + 1} × ${st.capacity + 1} states.`;
+}
+
+function renderRiskList() {
+  const fc = forecasts(pollOf(minute)).map((f) => ({ ...f, p: Math.max(f.pE, f.pF), e: f.pE >= f.pF }));
+  fc.sort((a, b) => b.p - a.p);
+  $("riskList").innerHTML = fc.slice(0, 5).map((f) => `<li><button type="button" data-i="${f.i}" aria-current="${f.i === selected}">
+    <span>${model.stations[f.i].name}</span><span class="p ${f.e ? "e" : "f"}">${pct(f.p)} ${f.e ? "out" : "full"}</span></button></li>`).join("");
+  $("riskList").querySelectorAll("button").forEach((b) => b.onclick = () => select(+b.dataset.i));
+}
+
+function select(i) { selected = i; renderAll(); }
+
+let lastRendered = { min: -1, poll: -1, sel: -1 };
+function renderAll(force = true) {
+  const m = Math.floor(minute), poll = pollOf(minute);
+  $("clock").textContent = fmtT(minute);
+  $("poll").textContent = `last poll ${fmtT(poll)}`;
+  $("scrub").value = String(m);
+  const k = Math.min(m - START, END - START);
+  $("mE").textContent = Math.round(sim.cumE[k]).toLocaleString();
+  $("mF").textContent = Math.round(sim.cumF[k]).toLocaleString();
+  $("mP").textContent = sim.cumP[k].toLocaleString();
+  $("mR").textContent = sim.cumR[k].toLocaleString();
+  if (force || poll !== lastRendered.poll || selected !== lastRendered.sel) renderRiskList();
+  if (force || m !== lastRendered.min || selected !== lastRendered.sel) renderCard();
+  lastRendered = { min: m, poll, sel: selected };
+  draw(); drawStrip();
+}
+
+function setMinute(m) { minute = Math.max(START, Math.min(END, m)); renderAll(true); }
+
+// ---------- playback ----------
+let lastT = 0;
+function tick(t) {
+  if (!playing) return;
+  const dt = Math.min(0.1, (t - lastT) / 1000); lastT = t;
+  minute += dt * Number($("speed").value);
+  if (minute >= END) { minute = END; setPlaying(false); }
+  renderAll(false);
+  requestAnimationFrame(tick);
+}
+function setPlaying(p) {
+  playing = p;
+  $("play").setAttribute("aria-label", p ? "Pause" : "Play");
+  $("playIcon").setAttribute("d", p ? "M3 1.5h3.5v13H3zM9.5 1.5H13v13H9.5z" : "M3 1.5v13l11-6.5z");
+  if (p) { if (minute >= END) minute = START; lastT = performance.now(); requestAnimationFrame(tick); }
+}
+$("play").onclick = () => setPlaying(!playing);
+$("scrub").addEventListener("input", (e) => setMinute(+e.target.value));
+$("newDay").onclick = () => { seed = (seed * 1103515245 + 12345) >>> 0; newDay(seed); };
+document.addEventListener("keydown", (e) => { if (e.code === "Space" && !/INPUT|SELECT|BUTTON|SUMMARY/.test(e.target.tagName)) { e.preventDefault(); setPlaying(!playing); } });
+document.addEventListener("toggle", (e) => { if (e.target.tagName === "DETAILS" && e.target.open) drawMatrix($("cMat"), selected); }, true);
+
+$("fileIn").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  try { setPlaying(false); selected = 0; cardBuiltFor = -1; loadModel(JSON.parse(await f.text())); }
+  catch (err) { $("card").insertAdjacentHTML("afterbegin", `<p class="err" role="alert">${err.message}</p>`); cardBuiltFor = -1; }
+  e.target.value = "";
+});
+
+window.addEventListener("resize", () => { resize(); renderAll(true); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { landKey = ""; legend(); renderAll(true); });
+
+buildLandPath();
+legend();
+loadModel(DEMO);
+// Start on the station most at risk at the first morning poll after 07:30, so the demo opens on the rush.
+minute = 450; fcCache.poll = -1;
+{ const fc = forecasts(pollOf(minute)); selected = fc.reduce((b, f) => Math.max(f.pE, f.pF) > Math.max(fc[b].pE, fc[b].pF) ? f.i : b, 0); }
+setMinute(450);
+</script>
+</body>
+</html>

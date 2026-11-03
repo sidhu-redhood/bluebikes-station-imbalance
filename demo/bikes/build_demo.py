@@ -46,17 +46,30 @@ def land_near(cells, stations):
     return {"origin": "EPSG:26986", "full": full, "clip": clip, "bbox": [x0, y0, x1, y1]}
 
 
+def empty_land(stations):
+    """Land background with no tiles, used when web/data/cells.json is absent.
+    The bbox is still framed around the stations so the demo's view is unchanged."""
+    xs, ys = zip(*(to_state_plane(s["lon"], s["lat"]) for s in stations))
+    x0, x1, y0, y1 = min(xs) - MARGIN_M, max(xs) + MARGIN_M, min(ys) - MARGIN_M, max(ys) + MARGIN_M
+    return {"origin": "EPSG:26986", "full": [], "clip": [], "bbox": [x0, y0, x1, y1]}
+
+
 def main():
-    bikes = (ROOT / "web/data/bikes.json").read_text()
-    cells = json.loads((ROOT / "web/data/cells.json").read_text())["cells"]
-    land = land_near(cells, json.loads(bikes)["stations"])
-    page = ((HERE / "template.html").read_text()
-            .replace("/*MARKOV*/", (HERE / "markov.js").read_text())
+    bikes = (ROOT / "web/data/bikes.json").read_text(encoding="utf-8")
+    stations = json.loads(bikes)["stations"]
+    cells_path = ROOT / "web/data/cells.json"
+    if cells_path.exists():
+        land = land_near(json.loads(cells_path.read_text(encoding="utf-8"))["cells"], stations)
+    else:
+        print(f"note: {cells_path} not found; building demo with no land tiles")
+        land = empty_land(stations)
+    page = ((HERE / "template.html").read_text(encoding="utf-8")
+            .replace("/*MARKOV*/", (HERE / "markov.js").read_text(encoding="utf-8"))
             .replace("/*BIKES*/", bikes)
             .replace("/*LAND*/", json.dumps(land, separators=(",", ":"))))
     out = HERE / "dist" / "bluebikes-markov-demo.html"
     out.parent.mkdir(exist_ok=True)
-    out.write_text(page)
+    out.write_text(page, encoding="utf-8")
     print(f"wrote {out} ({len(page) // 1024} KB, {len(land['full'])} full + {len(land['clip'])} clipped tiles)")
 
 
