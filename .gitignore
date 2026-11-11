@@ -28,3 +28,14 @@ id_*
 .DS_Store
 .idea/
 .vscode/
+
+# Node / Next.js (web/)
+node_modules/
+web/.next/
+web/out/
+web/next-env.d.ts
+.env.local
+*.tsbuildinfo
+
+# Kiro IDE workspace (planning/spec docs, not part of the app)
+.kiro/
