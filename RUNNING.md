@@ -194,3 +194,18 @@ python polling/health_check.py       # reports whether polling is healthy (read-
 - Copy the env file with `Copy-Item web\.env.local.example web\.env.local`.
 - Delete the stale cache with `Remove-Item -Recurse -Force web\.next`.
 - Open the demo by double-clicking `demo\bikes\dist\bluebikes-markov-demo.html`.
+
+## Station HMM (hidden counts, missed riders, van moves)
+
+Needs Saad's processed files in `data/processed/` (`neu_trips_<month>.csv`, `neu_stations.csv`, from `code/load_data.py`). `matplotlib` only for `--plots`. Details and results: `HMM.md`.
+
+```
+$env:PYTHONPATH = "$PWD\pipeline\src"     # Windows PowerShell
+export PYTHONPATH=pipeline/src            # macOS / Linux
+python -m coolboston.run_hmm --month 2026-08 --plots 4                        # about 80 s, writes outputs/hmm/2026-08/
+python -m coolboston.run_hmm --month 2026-11 --polls polling/bluebikes.db     # once polls overlap a trip month
+python -m coolboston.hmm_eval                                                 # planted-truth evaluation, about 8 min
+python -m pytest pipeline/tests/test_station_hmm.py -q
+```
+
+`outputs/hmm/<month>/bikes_hmm.json` is a drop-in `bikes.json` with corrected rates; load it in the demo with "Load bikes.json".

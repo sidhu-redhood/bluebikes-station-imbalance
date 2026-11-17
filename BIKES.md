@@ -29,7 +29,7 @@ The standalone demo page accepts any `bikes.json` from this script through its "
 
 ## Caveats
 
-- Rates come from trips that happened. Empty stations record no pickups, so demand is under-counted where stations often run out. The HMM step is meant to fix this.
+- Rates come from trips that happened. Empty stations record no pickups, so demand is under-counted where stations often run out. The HMM step (`HMM.md`) corrects this: `outputs/hmm/<month>/bikes_hmm.json` has corrected rates and estimated start counts.
 - Stations are modelled independently; a bike leaving one station does not appear at another.
 - Without `--status`, starting counts are an assumption (half full, shifted by the expected morning drain).
 - Demo-mode stations are hand-placed near real stations; positions and capacities are approximate.
