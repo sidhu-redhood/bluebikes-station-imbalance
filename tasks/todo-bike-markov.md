@@ -1,12 +1,12 @@
 # Tasks: Bluebikes station Markov model
 
-Spec: `.kiro/specs/SPEC-bike-markov.md`. Conventions as in `todo.md`:
+Spec: `.kiro/specs/SPEC-bike-markov.md` (the `.kiro/` folder is gitignored and is not in this repo; see `BIKES.md` for the model description). Conventions:
 - Implement, test, verify, then commit, one task per commit.
 - Stage specific files only.
 - Never push or deploy unasked.
 - When a task is done, append "(done)" to its header, tick its criteria, and add a "Notes:" paragraph before **Dependencies**.
 
-Standard verification: `make check` and `make build`.
+Standard verification (there is no Makefile): `PYTHONPATH=pipeline/src python -m pytest pipeline -q`, and from `web/`: `npm test && npm run build`.
 
 A reference implementation of every file below is already in the repo. For each task: read the spec section, review the reference against it, fix anything that disagrees, run the verification.
 
@@ -24,7 +24,7 @@ A reference implementation of every file below is already in the repo. For each 
 - [ ] Module docstring states the state, rates, step and the numpy → torch note.
 
 **Verification:**
-- [ ] `cd pipeline && uv run pytest -q tests/test_bike_markov.py`
+- [ ] `PYTHONPATH=pipeline/src python -m pytest -q pipeline/tests/test_bike_markov.py`
 
 **Dependencies:** None
 
@@ -42,8 +42,8 @@ A reference implementation of every file below is already in the repo. For each 
 - [ ] `--month` on a real month prints the station count (expect 45) and `source.kind = "bluebikes-trips"`. Run once by a human with network; record the month in Notes.
 
 **Verification:**
-- [ ] `cd pipeline && uv run pytest -q tests/test_build_bikes.py`
-- [ ] `uv run python -m coolboston.build_bikes --demo`
+- [ ] `PYTHONPATH=pipeline/src python -m pytest -q pipeline/tests/test_build_bikes.py`
+- [ ] `PYTHONPATH=pipeline/src python -m coolboston.build_bikes --demo`
 
 **Dependencies:** B1
 

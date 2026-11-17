@@ -15,12 +15,14 @@ Adds a Markov model of the bike count at each Bluebikes station, drawn on CoolBo
 ## Run
 
 ```bash
-cd pipeline
-uv run pytest tests/test_bike_markov.py tests/test_build_bikes.py
-uv run python -m coolboston.build_bikes --month 202509            # real trips (downloads once, cached)
-uv run python -m coolboston.build_bikes --month 202509 --status   # also take start counts from live GBFS
-uv run python -m coolboston.build_bikes --demo                    # offline demo model
-cd ../web && npm run dev    # open http://localhost:3000/bikes
+# from the repo root (coolboston has no installer, so put src on the path)
+export PYTHONPATH=$PWD/pipeline/src
+python -m pytest pipeline/tests/test_bike_markov.py pipeline/tests/test_build_bikes.py
+python -m coolboston.build_bikes --month 202509            # real trips (downloads once, cached)
+python -m coolboston.build_bikes --month 202509 --status   # also take start counts from live GBFS
+python -m coolboston.build_bikes --demo                    # offline demo model
+python -m coolboston.build_bikes_saad                      # NEU cluster (needs data/raw/, see README)
+cd web && npm run dev    # open http://localhost:3000/bikes
 ```
 
 The standalone demo page accepts any `bikes.json` from this script through its "Load bikes.json" button.

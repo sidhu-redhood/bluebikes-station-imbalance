@@ -1,10 +1,10 @@
 """Write web/data/bikes.json: per-station hourly rates for the station Markov model (bike_markov.py).
 
 Run (real data, needs network once; files are cached under pipeline/data/raw/bluebikes/):
-    uv run python -m coolboston.build_bikes --month 202509
-    uv run python -m coolboston.build_bikes --month 202509 --status   # start counts from live GBFS
+    python -m coolboston.build_bikes --month 202509
+    python -m coolboston.build_bikes --month 202509 --status   # start counts from live GBFS
 Run (no network, demo profiles; what the hosted demo ships with):
-    uv run python -m coolboston.build_bikes --demo
+    python -m coolboston.build_bikes --demo
 
 Sources
   Trips:    Bluebikes monthly trip history, s3.amazonaws.com/hubway-data/{YYYYMM}-bluebikes-tripdata.zip

@@ -51,20 +51,41 @@ This writes three files to `data/processed/`:
 
 The month, cluster radius, and file names are set in the CONFIG block at the top of `code/load_data.py`.
 
-Later steps: coming soon.
+**2. Markov model per station.** Estimates hourly weekday in/out rates from the trips and writes `web/data/bikes.json`; the model itself is `pipeline/src/coolboston/bike_markov.py`. See [BIKES.md](BIKES.md) for the model and [RUNNING.md](RUNNING.md) for every run command (tests, web app, demo, poller):
+
+```bash
+export PYTHONPATH=$PWD/pipeline/src
+python -m coolboston.build_bikes_saad      # NEU cluster -> web/data/bikes.json
+python -m pytest pipeline -q
+```
+
+Later steps (HMM to correct demand censoring, operator-response simulator): coming soon.
 
 ## Code Organization
 
 ```
 bluebikes-station-imbalance/
-├── code/
-│   └── load_data.py      # load trips, stations, weather; build the NEU cluster
+├── code/                 # step 1: data loading
+│   ├── load_data.py      # load trips, stations, weather; build the NEU cluster
+│   └── load_data_helper.py  # quick check that prints the cluster (no weather needed)
+├── pipeline/             # step 2: Markov model
+│   ├── src/coolboston/   # bike_markov.py (model), build_bikes*.py (rates -> bikes.json)
+│   └── tests/
+├── web/                  # Next.js map app (/bikes); web/lib/markov.ts mirrors bike_markov.py
+├── demo/bikes/           # builds a single-file offline demo HTML
+├── polling/              # live GBFS poller -> SQLite (separate from the model pipeline)
+├── Notebooks/            # exploratory preprocessing notebook (same logic as load_data.py)
+├── tasks/                # task plan for the Markov model
 ├── data/                 # not tracked by git
 │   ├── raw/              # downloaded files (see Data)
 │   └── processed/        # outputs of load_data.py
+├── BIKES.md              # model description
+├── RUNNING.md            # code guide and run instructions for every subsystem
 ├── requirements.txt
 └── README.md
 ```
+
+`bikes.json` is the contract between the Python pipeline, the web app and the demo. If you change `bike_markov.py`, update `web/lib/markov.ts` and `demo/bikes/markov.js` too, and run both test suites.
 
 ## Team
 

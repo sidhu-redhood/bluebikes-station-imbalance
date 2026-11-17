@@ -81,3 +81,13 @@ def test_model_rejects_bad_rates():
         StationModel(5, np.full(23, 1.0), np.full(24, 1.0))
     with pytest.raises(ValueError):
         StationModel(5, np.full(24, -1.0), np.full(24, 1.0))
+
+
+def test_high_rate_transition_is_clean_and_stochastic():
+    # Regression: Apple Accelerate BLAS raised spurious RuntimeWarnings in transition()'s matmul loop.
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        p = transition(generator(30, 300.0, 300.0), 10)
+    assert np.isfinite(p).all() and (p >= 0).all()
+    assert np.allclose(p.sum(axis=1), 1.0)
