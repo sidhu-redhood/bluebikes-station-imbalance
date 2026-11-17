@@ -1,4 +1,4 @@
-﻿import load_data as L
+import load_data as L
 
 tr = L.load_trips()
 st = L.build_stations(tr, L.load_station_list())

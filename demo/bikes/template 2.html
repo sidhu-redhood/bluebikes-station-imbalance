@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bluebikes station tracker: Markov model demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Basemap colours: CoolBoston's Mapbox Standard config (web/lib/mapConfig.ts). */
+  --land: #F4EFE4; --water: #1F4A6E; --water-ink: #A9C3D8;
+  --ink: #1C2630; --ink-2: #4A5866; --ink-3: #7B8794;
+  --surface: #FFFFFF; --panel: #FBF9F5; --line: #E4DED2;
+  --empty: #C8243B; --full: #1F63B4; --mid: #8E979F;
+  --focus: #1F63B4;
+  color-scheme: light;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --land: #2B2E31; --water: #10202E; --water-ink: #5E7C95;
+    --ink: #ECE8E0; --ink-2: #B9B4AA; --ink-3: #8B877F;
+    --surface: #1B1D20; --panel: #202326; --line: #34383C;
+    --empty: #F0566A; --full: #5A9CE8; --mid: #8A9096; --focus: #7FB3F0;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --land: #2B2E31; --water: #10202E; --water-ink: #5E7C95;
+  --ink: #ECE8E0; --ink-2: #B9B4AA; --ink-3: #8B877F;
+  --surface: #1B1D20; --panel: #202326; --line: #34383C;
+  --empty: #F0566A; --full: #5A9CE8; --mid: #8A9096; --focus: #7FB3F0;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: inherit; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--panel); color: var(--ink);
+  font: 400 15px/1.45 "Public Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+button, select, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.app { display: grid; grid-template-columns: minmax(0, 1fr) 390px; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; }
+header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
+header h1 { font-size: 17px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+header p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+.source { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); }
+.pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; background: var(--panel); white-space: nowrap; }
+.pill.real { border-color: var(--full); color: var(--full); }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.btn:hover { border-color: var(--ink-3); }
+
+.map-wrap { position: relative; min-height: 0; background: var(--water); overflow: hidden; touch-action: none; }
+#map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+#map.dragging { cursor: grabbing; }
+.map-tools { position: absolute; top: 12px; left: 12px; display: flex; flex-direction: column; gap: 8px; }
+.seg { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 2px; }
+.seg button { border: 0; background: transparent; padding: 5px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; color: var(--ink-2); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.zoom { display: inline-flex; flex-direction: column; width: 34px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.zoom button { border: 0; background: transparent; height: 32px; cursor: pointer; font-size: 18px; }
+.zoom button + button { border-top: 1px solid var(--line); }
+.legend { position: absolute; left: 12px; bottom: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 12.5px; color: var(--ink-2); max-width: calc(100% - 24px); }
+.legend .ramp { height: 8px; width: 190px; max-width: 100%; border-radius: 4px; margin: 5px 0 3px; }
+.legend .ends { display: flex; justify-content: space-between; gap: 12px; }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--surface); font-size: 12.5px; padding: 5px 8px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, calc(-100% - 12px)); display: none; }
+
+.timeline { grid-column: 1; border-top: 1px solid var(--line); background: var(--surface); padding: 10px 18px 12px; display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; align-items: center; }
+.clock { display: flex; align-items: baseline; gap: 12px; }
+.clock time { font-size: 44px; font-weight: 600; letter-spacing: -0.03em; line-height: 1; }
+.clock .poll { font-size: 12.5px; color: var(--ink-3); }
+.controls { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.play { width: 40px; height: 36px; border-radius: 8px; border: 0; background: var(--ink); color: var(--surface); cursor: pointer; display: grid; place-items: center; }
+.play svg { width: 16px; height: 16px; fill: currentColor; }
+.strip { position: relative; height: 74px; }
+.strip canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.strip input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: ew-resize; margin: 0; }
+.strip:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.metrics { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 26px; font-size: 13px; color: var(--ink-2); }
+.metrics b { color: var(--ink); font-weight: 600; font-size: 15px; margin-right: 4px; }
+.metrics .e b { color: var(--empty); } .metrics .f b { color: var(--full); }
+
+aside { grid-column: 2; grid-row: 2 / 4; border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 16px 18px 28px; }
+aside h2 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 0 0 8px; }
+.risk-list { list-style: none; margin: 0 0 20px; padding: 0; display: grid; gap: 2px; }
+.risk-list button { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; text-align: left; background: transparent; border: 0; border-radius: 7px; padding: 6px 8px; cursor: pointer; font-size: 13.5px; }
+.risk-list button:hover, .risk-list button[aria-current="true"] { background: var(--surface); }
+.risk-list .p { font-weight: 600; }
+.risk-list .p.e { color: var(--empty); } .risk-list .p.f { color: var(--full); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.card h3 { margin: 0; font-size: 17px; line-height: 1.25; }
+.card .kind { color: var(--ink-2); font-size: 13px; margin-top: 3px; }
+.now { display: flex; align-items: baseline; gap: 14px; margin: 14px 0 4px; }
+.now .n { font-size: 40px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
+.now .of { color: var(--ink-2); font-size: 14px; }
+.state { display: inline-block; font-size: 12.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; margin-left: 2px; }
+.state.e { background: color-mix(in srgb, var(--empty) 14%, transparent); color: var(--empty); }
+.state.f { background: color-mix(in srgb, var(--full) 14%, transparent); color: var(--full); }
+.risks { display: grid; grid-template-columns: auto 1fr auto; gap: 6px 10px; align-items: center; font-size: 13px; margin: 14px 0 4px; }
+.bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 4px; }
+.risks .v { font-weight: 600; min-width: 3.2em; text-align: right; }
+.chart-h { font-size: 13px; font-weight: 600; margin: 18px 0 2px; }
+.chart-sub { font-size: 12.5px; color: var(--ink-3); margin: 0 0 6px; }
+.chart { width: 100%; display: block; }
+details { margin-top: 16px; font-size: 13px; color: var(--ink-2); }
+summary { cursor: pointer; color: var(--ink); font-weight: 600; }
+.score { margin-top: 20px; font-size: 13px; color: var(--ink-2); }
+.score table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.score td, .score th { padding: 4px 0; text-align: left; border-bottom: 1px solid var(--line); font-weight: 400; }
+.score th { color: var(--ink-3); font-size: 12.5px; }
+.score td:not(:first-child), .score th:not(:first-child) { text-align: right; }
+.note { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
+.err { color: var(--empty); font-size: 13px; }
+.method { margin-top: 22px; font-size: 13px; color: var(--ink-2); }
+.method p { margin: 0 0 8px; max-width: 60ch; }
+.method code { font-size: 12.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 56vh auto auto; height: auto; }
+  header { flex-wrap: wrap; }
+  .source { margin-left: 0; }
+  aside { grid-column: 1; grid-row: auto; border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
+  .clock time { font-size: 34px; }
+  .timeline { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1>Bluebikes station tracker</h1>
+      <p>A Markov model of the bike count at each station, run over one weekday in Downtown Boston</p>
+    </div>
+    <div class="source">
+      <span id="sourcePill" class="pill">Demo rates</span>
+      <label class="btn" for="fileIn">Load bikes.json</label>
+      <input id="fileIn" type="file" accept=".json,application/json" hidden>
+    </div>
+  </header>
+
+  <div class="map-wrap" id="mapWrap">
+    <canvas id="map" aria-label="Map of Downtown Boston with Bluebikes stations. Use the station list to select one." role="img"></canvas>
+    <div class="map-tools">
+      <div class="seg" role="group" aria-label="Colour stations by">
+        <button type="button" data-mode="now" aria-pressed="true">Bikes now</button>
+        <button type="button" data-mode="risk" aria-pressed="false">Risk in 30 min</button>
+      </div>
+      <div class="zoom" role="group" aria-label="Zoom">
+        <button type="button" id="zin" aria-label="Zoom in">+</button>
+        <button type="button" id="zout" aria-label="Zoom out">−</button>
+      </div>
+    </div>
+    <div class="legend" id="legend" role="group" aria-label="Legend"></div>
+    <div class="tip" id="tip"></div>
+  </div>
+
+  <section class="timeline" aria-label="Simulated day">
+    <div>
+      <div class="clock"><time id="clock">05:00</time><span class="poll" id="poll">last poll 05:00</span></div>
+      <div class="controls">
+        <button class="play" id="play" type="button" aria-label="Play"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="playIcon" d="M3 1.5v13l11-6.5z"/></svg></button>
+        <select class="btn" id="speed" aria-label="Speed">
+          <option value="2">2 min/s</option>
+          <option value="6" selected>6 min/s</option>
+          <option value="20">20 min/s</option>
+        </select>
+        <button class="btn" id="newDay" type="button">New day</button>
+      </div>
+    </div>
+    <div class="strip">
+      <canvas id="strip" aria-hidden="true"></canvas>
+      <input id="scrub" type="range" min="300" max="1440" step="1" value="300" aria-label="Time of day">
+    </div>
+    <div class="metrics" aria-live="off">
+      <span class="e"><b id="mE">0</b>empty station-minutes</span>
+      <span class="f"><b id="mF">0</b>full station-minutes</span>
+      <span><b id="mP">0</b>riders found no bike</span>
+      <span><b id="mR">0</b>riders found no dock</span>
+    </div>
+  </section>
+
+  <aside aria-label="Station details">
+    <h2>Most likely to run out or fill up in the next 30 minutes</h2>
+    <ul class="risk-list" id="riskList"></ul>
+    <div class="card" id="card"></div>
+    <div class="score" id="score"></div>
+    <div class="method">
+      <h2>How the model works</h2>
+      <p>Each station’s state is its bike count, 0 to capacity. Within each clock hour, riders return bikes at one rate and take them at another, both estimated from trip history. That makes the count a birth–death Markov chain: up one when a bike comes back, down one when a bike leaves, with returns blocked at full and pickups blocked at empty.</p>
+      <p>The tracker reads each station every 10 minutes, as the planned GBFS polling would, and turns the hourly rates into a 10-minute transition matrix <code>P = exp(Q·10)</code>. Multiplying the current state through those matrices gives the forecast. Making “empty” an absorbing state gives the chance the station runs out at any moment before a later poll, not only at a poll.</p>
+      <p>The day itself is simulated rider by rider from the same rates, so the forecasts here are scored in the best case. The real test is scoring them against your own GBFS polls.</p>
+    </div>
+  </aside>
+</div>
+
+<script>
+/*MARKOV*/
+</script>
+<script>
+const DEMO = /*BIKES*/;
+const LAND = /*LAND*/;
+
+// ---------- State Plane (EPSG:26986), same math as CoolBoston web/lib/grid.ts ----------
+const SP = (() => {
+  const A = 6378137, F = 1 / 298.257222101, E = Math.sqrt(2 * F - F * F), r = (d) => d * Math.PI / 180;
+  const L1 = r(42 + 41 / 60), L2 = r(41 + 43 / 60), L0 = r(41), LON0 = r(-71.5), FE = 200000, FN = 750000;
+  const m = (p) => Math.cos(p) / Math.sqrt(1 - (E * Math.sin(p)) ** 2);
+  const t = (p) => Math.tan(Math.PI / 4 - p / 2) / ((1 - E * Math.sin(p)) / (1 + E * Math.sin(p))) ** (E / 2);
+  const N = (Math.log(m(L1)) - Math.log(m(L2))) / (Math.log(t(L1)) - Math.log(t(L2)));
+  const AF = A * m(L1) / (N * t(L1) ** N), RHO0 = AF * t(L0) ** N;
+  return (lng, lat) => { const rho = AF * t(r(lat)) ** N, th = N * (r(lng) - LON0); return [FE + rho * Math.sin(th), FN + RHO0 - rho * Math.cos(th)]; };
+})();
+
+const START = 300, END = 1440, HORIZON = 12; // 2 h of 10-minute polls
+const $ = (id) => document.getElementById(id);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmtT = (m) => { m = Math.min(m, 1439.99); const h = Math.floor(m / 60), mm = Math.floor(m % 60); return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`; };
+const pct = (p) => p < 0.005 ? "<1%" : p > 0.995 ? ">99%" : `${Math.round(p * 100)}%`;
+
+let model = null;     // { doc, stations: [{...st, x, y, c, role}] }
+let sim = null;       // { traces, emptyCount, fullCount, cumE, cumF, cumP, cumR }
+let minute = START, playing = false, selected = 0, colorMode = "now";
+let fcCache = { poll: -1, list: [] };
+let seed = 4100;
+
+// ---------- data ----------
+function parseDoc(doc) {
+  const fail = (msg) => { throw new Error(`bikes.json: ${msg}`); };
+  if (!doc || doc.version !== 1) fail("version must be 1 (write it with coolboston.build_bikes)");
+  if (!Array.isArray(doc.stations) || !doc.stations.length) fail("no stations");
+  const keys = ["id", "name", "lat", "lon", "capacity", "initialBikes", "ratesIn", "ratesOut"];
+  doc.stations.forEach((s, i) => {
+    const w = `stations[${i}]`;
+    for (const k of keys) if (!(k in s)) fail(`${w}: missing "${k}"`);
+    if (!Number.isInteger(s.capacity) || s.capacity < 1 || s.capacity > 120) fail(`${w}.capacity must be an integer 1..120`);
+    if (!(s.initialBikes >= 0 && s.initialBikes <= s.capacity)) fail(`${w}.initialBikes outside 0..capacity`);
+    for (const k of ["ratesIn", "ratesOut"])
+      if (!Array.isArray(s[k]) || s[k].length !== 24 || !s[k].every((x) => Number.isFinite(x) && x >= 0)) fail(`${w}.${k} must be 24 non-negative numbers`);
+  });
+  return doc;
+}
+
+function role(st) {
+  const sum = (a) => a.slice(6, 10).reduce((x, y) => x + y, 0);
+  const inn = sum(st.ratesIn), out = sum(st.ratesOut);
+  if (out > 1.3 * inn) return "Empties in the morning rush";
+  if (inn > 1.3 * out) return "Fills in the morning rush";
+  return "Roughly balanced through the day";
+}
+
+function loadModel(doc) {
+  parseDoc(doc);
+  const step = doc.stepMinutes || 10;
+  const stations = doc.stations.map((s) => {
+    const [x, y] = SP(s.lon, s.lat);
+    return { ...s, x, y, c: Markov.compile(s, step), role: role(s) };
+  });
+  model = { doc, stations, step };
+  const pill = $("sourcePill"), src = doc.source || {};
+  pill.textContent = src.kind === "bluebikes-trips" ? `Rates from trips, ${String(src.month).slice(0, 4)}-${String(src.month).slice(4)}` : "Demo rates";
+  pill.classList.toggle("real", src.kind === "bluebikes-trips");
+  fitView();
+  newDay(seed);
+}
+
+// ---------- simulation ----------
+function newDay(s) {
+  const random = Markov.rng(s), mins = END - START, S = model.stations;
+  const traces = S.map((st) => Markov.simulate(st, st.initialBikes, random, START, mins));
+  const emptyCount = new Uint16Array(mins + 1), fullCount = new Uint16Array(mins + 1);
+  const cumE = new Float64Array(mins + 1), cumF = new Float64Array(mins + 1), cumP = new Uint32Array(mins + 1), cumR = new Uint32Array(mins + 1);
+  for (let k = 0; k <= mins; k++) {
+    let e = 0, f = 0, p = 0, r = 0;
+    traces.forEach((tr, i) => { const b = tr.bikes[k]; if (b === 0) e++; else if (b === S[i].capacity) f++; p += tr.missedP[k]; r += tr.missedR[k]; });
+    emptyCount[k] = e; fullCount[k] = f;
+    if (k > 0) { cumE[k] = cumE[k - 1] + emptyCount[k - 1]; cumF[k] = cumF[k - 1] + fullCount[k - 1]; cumP[k] = cumP[k - 1] + p; cumR[k] = cumR[k - 1] + r; }
+  }
+  sim = { traces, emptyCount, fullCount, cumE, cumF, cumP, cumR };
+  fcCache.poll = -1;
+  scoreForecasts();
+  setMinute(START);
+}
+
+const bikesAt = (i, m) => sim.traces[i].bikes[Math.min(Math.max(Math.round(m) - START, 0), END - START)];
+const pollOf = (m) => Math.max(START, Math.floor(m / model.step) * model.step);
+
+function forecasts(poll) {
+  if (fcCache.poll === poll) return fcCache.list;
+  fcCache = { poll, list: model.stations.map((st, i) => {
+    const b = bikesAt(i, poll), k = Math.round(30 / model.step);
+    return { i, b, pE: Markov.hitEmpty(st.c, b, poll, k), pF: Markov.hitFull(st.c, b, poll, k) };
+  }) };
+  return fcCache.list;
+}
+
+/** Brier score of the 30-minute run-out / fill-up warnings over the whole simulated day. */
+function scoreForecasts() {
+  const k = Math.round(30 / model.step), rows = { e: [], f: [] };
+  model.stations.forEach((st, i) => {
+    const tr = sim.traces[i].bikes;
+    for (let poll = START; poll + 30 <= END; poll += model.step) {
+      const b = tr[poll - START];
+      let hitE = 0, hitF = 0;
+      for (let m = poll; m <= poll + 30; m++) { const v = tr[m - START]; if (v === 0) hitE = 1; if (v === st.capacity) hitF = 1; }
+      rows.e.push([Markov.hitEmpty(st.c, b, poll, k), hitE]);
+      rows.f.push([Markov.hitFull(st.c, b, poll, k), hitF]);
+    }
+  });
+  const brier = (r) => r.reduce((s, [p, o]) => s + (p - o) ** 2, 0) / r.length;
+  const base = (r) => { const m = r.reduce((s, [, o]) => s + o, 0) / r.length; return r.reduce((s, [, o]) => s + (m - o) ** 2, 0) / r.length; };
+  const out = ["e", "f"].map((key) => ({ key, model: brier(rows[key]), base: base(rows[key]), n: rows[key].length }));
+  $("score").innerHTML = `<h2>How good were today’s 30-minute warnings?</h2>
+    <table><thead><tr><th>Brier score (lower is better)</th><th>Markov</th><th>Base rate</th><th>Skill</th></tr></thead><tbody>
+    ${out.map((o) => `<tr><td>${o.key === "e" ? "Runs out" : "Fills up"}</td><td>${o.model.toFixed(3)}</td><td>${o.base.toFixed(3)}</td><td>${o.base > 0 ? Math.round((1 - o.model / o.base) * 100) + "%" : "n/a"}</td></tr>`).join("")}
+    </tbody></table>
+    <p class="note">${out[0].n.toLocaleString()} warnings per row, one per station per poll. “Base rate” always predicts the day’s average frequency. Skill is the share of its error the model removes.</p>`;
+}
+
+// ---------- map ----------
+const mapCv = $("map"), mctx = mapCv.getContext("2d");
+let view = { cx: 0, cy: 0, s: 0.2 }, W = 0, H = 0, DPR = 1, landPath = null, landCv = null, landKey = "";
+
+function buildLandPath() {
+  const p = new Path2D();
+  for (const [i, j] of LAND.full) p.rect(i * 100, j * 100, 100, 100);
+  for (const [i, j, polys] of LAND.clip)
+    for (const poly of polys) for (const ring of poly) {
+      ring.forEach(([dx, dy], k) => k ? p.lineTo(i * 100 + dx, j * 100 + dy) : p.moveTo(i * 100 + dx, j * 100 + dy));
+      p.closePath();
+    }
+  landPath = p;
+}
+
+const LABELS = [
+  ["Back Bay", 42.3503, -71.0812], ["South End", 42.3405, -71.0735], ["Downtown", 42.3548, -71.0585],
+  ["Beacon Hill", 42.3588, -71.0672], ["North End", 42.3652, -71.0545], ["Seaport", 42.3492, -71.0425],
+  ["South Boston", 42.3345, -71.0470], ["Fenway", 42.3440, -71.0975], ["West End", 42.3655, -71.0650],
+  ["Charlestown", 42.3760, -71.0610], ["East Boston", 42.3700, -71.0360],
+].map(([n, lat, lon]) => { const [x, y] = SP(lon, lat); return { n, x, y }; });
+const WATER_LABELS = [["Charles River", 42.3585, -71.0800], ["Boston Harbor", 42.3570, -71.0430], ["Cambridge, outside the land grid", 42.3640, -71.0905]]
+  .map(([n, lat, lon]) => { const [x, y] = SP(lon, lat); return { n, x, y }; });
+
+function fitView() {
+  const S = model.stations, xs = S.map((s) => s.x), ys = S.map((s) => s.y);
+  const pad = 380, x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad, y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;
+  resize();
+  view.cx = (x0 + x1) / 2; view.cy = (y0 + y1) / 2;
+  view.s = Math.min(W / (x1 - x0), H / (y1 - y0));
+  draw();
+}
+
+function resize() {
+  const r = mapCv.getBoundingClientRect();
+  DPR = Math.min(window.devicePixelRatio || 1, 2); W = r.width; H = r.height;
+  mapCv.width = Math.round(W * DPR); mapCv.height = Math.round(H * DPR);
+  landKey = "";
+}
+
+const toScreen = (x, y) => [(x - view.cx) * view.s + W / 2, -(y - view.cy) * view.s + H / 2];
+const toWorld = (px, py) => [(px - W / 2) / view.s + view.cx, -(py - H / 2) / view.s + view.cy];
+
+function drawLand() {
+  const key = `${view.cx}|${view.cy}|${view.s}|${W}|${H}|${css("--land")}`;
+  if (key === landKey) return;
+  landKey = key;
+  landCv = landCv || document.createElement("canvas");
+  landCv.width = mapCv.width; landCv.height = mapCv.height;
+  const c = landCv.getContext("2d");
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.fillStyle = css("--water"); c.fillRect(0, 0, landCv.width, landCv.height);
+  c.setTransform(DPR * view.s, 0, 0, -DPR * view.s, DPR * (W / 2 - view.cx * view.s), DPR * (H / 2 + view.cy * view.s));
+  c.fillStyle = css("--land"); c.strokeStyle = css("--land"); c.lineWidth = 1.6 / view.s;
+  c.fill(landPath, "evenodd"); c.stroke(landPath);
+  c.setTransform(DPR, 0, 0, DPR, 0, 0);
+  c.textAlign = "center"; c.textBaseline = "middle";
+  const fs = Math.max(11, Math.min(14, view.s * 55));
+  c.font = `600 ${fs}px "Public Sans", sans-serif`; c.fillStyle = css("--ink-3");
+  for (const l of LABELS) { const [px, py] = toScreen(l.x, l.y); c.fillText(l.n, px, py); }
+  c.font = `italic 400 ${fs - 1}px "Public Sans", sans-serif`; c.fillStyle = css("--water-ink");
+  for (const l of WATER_LABELS) { const [px, py] = toScreen(l.x, l.y); c.fillText(l.n, px, py); }
+}
+
+function mix(a, b, t) {
+  const p = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
+  const A = p(a), B = p(b);
+  return `rgb(${A.map((v, k) => Math.round(v + (B[k] - v) * t)).join(",")})`;
+}
+
+function stationColor(i, fc) {
+  const st = model.stations[i];
+  if (colorMode === "now") {
+    const f = bikesAt(i, minute) / st.capacity;
+    return f < 0.5 ? mix(css("--empty"), css("--mid"), f / 0.5) : mix(css("--mid"), css("--full"), (f - 0.5) / 0.5);
+  }
+  const { pE, pF } = fc[i];
+  return pE >= pF ? mix(css("--mid"), css("--empty"), Math.min(1, pE)) : mix(css("--mid"), css("--full"), Math.min(1, pF));
+}
+
+function stationRadius(st) { return Math.max(4, Math.min(16, Math.sqrt(st.capacity) * 1.25 * Math.sqrt(view.s / 0.12))); }
+
+function draw() {
+  if (!model || !sim) return;
+  drawLand();
+  mctx.setTransform(1, 0, 0, 1, 0, 0);
+  mctx.drawImage(landCv, 0, 0);
+  mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const fc = forecasts(pollOf(minute)), surface = css("--surface"), ink = css("--ink");
+  model.stations.forEach((st, i) => {
+    const [px, py] = toScreen(st.x, st.y), r = stationRadius(st), b = bikesAt(i, minute);
+    mctx.beginPath(); mctx.arc(px, py, r, 0, 2 * Math.PI);
+    mctx.fillStyle = stationColor(i, fc); mctx.fill();
+    mctx.lineWidth = 1.5; mctx.strokeStyle = surface; mctx.stroke();
+    if (b === 0 || b === st.capacity) { // a state, not just a colour: empty gets a hollow centre, full a dot
+      mctx.beginPath(); mctx.arc(px, py, r * 0.45, 0, 2 * Math.PI);
+      if (b === 0) { mctx.fillStyle = surface; mctx.fill(); }
+      else { mctx.lineWidth = 2; mctx.strokeStyle = surface; mctx.stroke(); }
+    }
+    if (i === selected) { mctx.beginPath(); mctx.arc(px, py, r + 4, 0, 2 * Math.PI); mctx.lineWidth = 2.5; mctx.strokeStyle = ink; mctx.stroke(); }
+  });
+}
+
+function legend() {
+  const e = css("--empty"), m = css("--mid"), f = css("--full");
+  $("legend").innerHTML = colorMode === "now"
+    ? `Bikes as a share of docks<div class="ramp" style="background:linear-gradient(90deg,${e},${m},${f})"></div><div class="ends"><span>0% (hollow: empty)</span><span>100% (inner ring: full)</span></div>`
+    : `Chance of running out (red) or filling up (blue) before the poll 30 minutes ahead<div class="ramp" style="background:linear-gradient(90deg,${e},${m},${f})"></div><div class="ends"><span>Run out 100%</span><span>0%</span><span>Fill up 100%</span></div>`;
+}
+
+function hitTest(px, py) {
+  let best = -1, bd = Infinity;
+  model.stations.forEach((st, i) => { const [x, y] = toScreen(st.x, st.y), d = Math.hypot(x - px, y - py); if (d < stationRadius(st) + 6 && d < bd) { bd = d; best = i; } });
+  return best;
+}
+
+// pan / zoom / select
+let drag = null;
+mapCv.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy, moved: false }; mapCv.setPointerCapture(e.pointerId); });
+mapCv.addEventListener("pointermove", (e) => {
+  const r = mapCv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  if (drag) {
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.hypot(dx, dy) > 3) { drag.moved = true; mapCv.classList.add("dragging"); }
+    view.cx = drag.cx - dx / view.s; view.cy = drag.cy + dy / view.s; draw(); $("tip").style.display = "none"; return;
+  }
+  const i = hitTest(px, py), tip = $("tip");
+  if (i < 0) { tip.style.display = "none"; mapCv.style.cursor = ""; return; }
+  const st = model.stations[i];
+  tip.textContent = `${st.name}: ${bikesAt(i, minute)} of ${st.capacity}`;
+  tip.style.left = `${px}px`; tip.style.top = `${py}px`; tip.style.display = "block"; mapCv.style.cursor = "pointer";
+});
+mapCv.addEventListener("pointerup", (e) => {
+  const r = mapCv.getBoundingClientRect();
+  if (drag && !drag.moved) { const i = hitTest(e.clientX - r.left, e.clientY - r.top); if (i >= 0) select(i); }
+  drag = null; mapCv.classList.remove("dragging");
+});
+mapCv.addEventListener("pointerleave", () => { $("tip").style.display = "none"; });
+function zoomAt(f, px = W / 2, py = H / 2) {
+  const [wx, wy] = toWorld(px, py);
+  view.s = Math.max(0.03, Math.min(1.5, view.s * f));
+  view.cx = wx - (px - W / 2) / view.s; view.cy = wy + (py - H / 2) / view.s; draw();
+}
+mapCv.addEventListener("wheel", (e) => { e.preventDefault(); const r = mapCv.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+$("zin").onclick = () => zoomAt(1.4); $("zout").onclick = () => zoomAt(1 / 1.4);
+document.querySelectorAll(".seg button").forEach((b) => b.onclick = () => {
+  colorMode = b.dataset.mode;
+  document.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  legend(); draw();
+});
+
+// ---------- timeline strip ----------
+const stripCv = $("strip"), sctx = stripCv.getContext("2d");
+function drawStrip() {
+  const r = stripCv.getBoundingClientRect(), dpr = DPR;
+  if (stripCv.width !== Math.round(r.width * dpr)) { stripCv.width = Math.round(r.width * dpr); stripCv.height = Math.round(r.height * dpr); }
+  const w = r.width, h = r.height, mid = h / 2 - 4, n = model.stations.length;
+  sctx.setTransform(dpr, 0, 0, dpr, 0, 0); sctx.clearRect(0, 0, w, h);
+  const X = (m) => (m - START) / (END - START) * w, scale = (mid - 6) / Math.max(4, Math.ceil(n * 0.4));
+  const area = (arr, sign, color) => {
+    sctx.beginPath(); sctx.moveTo(0, mid);
+    for (let k = 0; k < arr.length; k += 2) sctx.lineTo(X(START + k), mid - sign * arr[k] * scale);
+    sctx.lineTo(w, mid); sctx.closePath(); sctx.fillStyle = color; sctx.globalAlpha = 0.85; sctx.fill(); sctx.globalAlpha = 1;
+  };
+  area(sim.fullCount, 1, css("--full")); area(sim.emptyCount, -1, css("--empty"));
+  sctx.fillStyle = css("--line"); sctx.fillRect(0, mid, w, 1);
+  sctx.fillStyle = css("--ink-3"); sctx.font = `400 11px "Public Sans", sans-serif`; sctx.textBaseline = "alphabetic";
+  for (let hr = 6; hr <= 24; hr += 3) { const x = X(hr * 60); sctx.fillRect(x, mid + 1, 1, 4); sctx.textAlign = hr === 24 ? "right" : "center"; sctx.fillText(hr === 24 ? "24:00" : `${String(hr).padStart(2, "0")}:00`, x, h - 2); }
+  sctx.textAlign = "left"; sctx.fillStyle = css("--full"); sctx.fillText("stations full", 4, 11);
+  sctx.fillStyle = css("--empty"); sctx.fillText("stations empty", 4, mid + 17);
+  const x = X(minute); sctx.fillStyle = css("--ink"); sctx.fillRect(x - 1, 0, 2, h - 14);
+}
+
+// ---------- station card ----------
+function drawFan(cv, i, poll) {
+  const st = model.stations[i], n = st.capacity + 1, dpr = DPR, w = cv.clientWidth, h = 150;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.height = `${h}px`;
+  const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const past = 60, fut = HORIZON * model.step, L = 26, R = w - 6, T = 6, B = h - 20;
+  const X = (dm) => L + (dm + past) / (past + fut) * (R - L), Y = (b) => B - b / st.capacity * (B - T);
+  const rows = Markov.forecast(st.c, bikesAt(i, poll), poll, HORIZON), full = css("--full");
+  for (let t = 1; t <= HORIZON; t++) {
+    if (poll + t * model.step > END) break;
+    const x0 = X((t - 1) * model.step), x1 = X(t * model.step), mx = Math.max(...rows[t]);
+    for (let b = 0; b < n; b++) {
+      const p = rows[t][b]; if (p < 1e-4) continue;
+      c.globalAlpha = Math.min(1, Math.sqrt(p / mx)) * 0.75; c.fillStyle = full;
+      const y0 = Y(b + 0.5), y1 = Y(b - 0.5); c.fillRect(x0 + 0.5, Math.max(T, y0), x1 - x0 - 1, Math.min(B, y1) - Math.max(T, y0));
+    }
+  }
+  c.globalAlpha = 1;
+  // expected value
+  c.beginPath(); rows.forEach((r, t) => { if (poll + t * model.step > END) return; const m = r.reduce((s, v, b) => s + v * b, 0); t ? c.lineTo(X(t * model.step), Y(m)) : c.moveTo(X(0), Y(m)); });
+  c.setLineDash([4, 3]); c.strokeStyle = css("--ink"); c.lineWidth = 1.5; c.stroke(); c.setLineDash([]);
+  // observed past
+  c.beginPath();
+  for (let dm = -past; dm <= Math.min(0, minute - poll); dm++) { const m = poll + dm; if (m < START) continue; const y = Y(bikesAt(i, m)); c.lineTo(X(dm), y); }
+  c.strokeStyle = css("--ink"); c.lineWidth = 2; c.stroke();
+  // axes
+  c.fillStyle = css("--line"); c.fillRect(L, B, R - L, 1); c.fillRect(X(0), T, 1, B - T);
+  c.fillStyle = css("--ink-3"); c.font = `400 11px "Public Sans", sans-serif`; c.textAlign = "right"; c.textBaseline = "middle";
+  c.fillText(String(st.capacity), L - 5, Y(st.capacity)); c.fillText("0", L - 5, Y(0));
+  c.textAlign = "center"; c.textBaseline = "alphabetic";
+  [[-60, "−1 h"], [0, `poll ${fmtT(poll)}`], [60, "+1 h"], [120, "+2 h"]].forEach(([dm, s]) => c.fillText(s, Math.min(R - 16, X(dm)), h - 4));
+}
+
+function drawRates(cv, i) {
+  const st = model.stations[i], dpr = DPR, w = cv.clientWidth, h = 96;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.height = `${h}px`;
+  const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const mx = Math.max(1, ...st.ratesIn, ...st.ratesOut), L = 2, R = w - 2, mid = (h - 14) / 2, bw = (R - L) / 24;
+  const hr = Math.floor(minute / 60) % 24;
+  c.fillStyle = css("--panel"); c.fillRect(L + hr * bw, 0, bw, h - 14);
+  for (let k = 0; k < 24; k++) {
+    const a = st.ratesIn[k] / mx * (mid - 2), d = st.ratesOut[k] / mx * (mid - 2);
+    c.fillStyle = css("--full"); c.fillRect(L + k * bw + 1, mid - a, bw - 2, a);
+    c.fillStyle = css("--empty"); c.fillRect(L + k * bw + 1, mid, bw - 2, d);
+  }
+  c.fillStyle = css("--ink-3"); c.font = `400 11px "Public Sans", sans-serif`; c.textAlign = "center";
+  [0, 6, 12, 18].forEach((k) => c.fillText(String(k).padStart(2, "0"), L + (k + 0.5) * bw, h - 2));
+}
+
+function drawMatrix(cv, i) {
+  const st = model.stations[i], n = st.capacity + 1, dpr = DPR, size = Math.min(cv.clientWidth, 260);
+  cv.width = Math.round(size * dpr); cv.height = Math.round(size * dpr); cv.style.height = `${size}px`; cv.style.width = `${size}px`;
+  const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const P = st.c.P[Math.floor(minute / 60) % 24], cell = size / n, ink = css("--ink");
+  c.fillStyle = css("--surface"); c.fillRect(0, 0, size, size);
+  for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
+    const p = P[a * n + b]; if (p < 1e-3) continue;
+    c.globalAlpha = Math.min(1, Math.sqrt(p)); c.fillStyle = ink;
+    c.fillRect(b * cell, a * cell, Math.ceil(cell), Math.ceil(cell));
+  }
+  c.globalAlpha = 1;
+}
+
+let cardBuiltFor = -1;
+function renderCard() {
+  const i = selected, st = model.stations[i], poll = pollOf(minute), b = bikesAt(i, minute);
+  const fc = forecasts(poll)[i], k60 = Math.round(60 / model.step), b0 = bikesAt(i, poll);
+  const e60 = Markov.hitEmpty(st.c, b0, poll, k60), f60 = Markov.hitFull(st.c, b0, poll, k60);
+  const state = b === 0 ? `<span class="state e">Empty</span>` : b === st.capacity ? `<span class="state f">Full</span>` : "";
+  if (cardBuiltFor !== i) {
+    $("card").innerHTML = `<h3 id="cName"></h3><div class="kind" id="cKind"></div>
+      <div class="now"><span class="n" id="cN"></span><span class="of" id="cOf"></span></div>
+      <div class="risks" id="cRisks"></div>
+      <div class="chart-h">Forecast from the last poll</div>
+      <p class="chart-sub">Line: observed count. Shading: chance of each count at later polls. Dashes: expected count.</p>
+      <canvas class="chart" id="cFan"></canvas>
+      <div class="chart-h">Hourly rates, weekday</div>
+      <p class="chart-sub">Bikes returned per hour (blue, up) and taken (red, down). Shaded: this hour.</p>
+      <canvas class="chart" id="cRates"></canvas>
+      <details><summary>Transition matrix for this hour</summary>
+        <p class="chart-sub">Row: bikes at one poll. Column: bikes at the next. Stronger shading is likelier. Each row sums to 1.</p>
+        <canvas id="cMat"></canvas><p class="note" id="cMatNote"></p></details>`;
+    cardBuiltFor = i;
+  }
+  $("cName").textContent = st.name;
+  $("cKind").textContent = `${st.role}. ${st.capacity} docks.`;
+  $("cN").innerHTML = `${b}`;
+  $("cOf").innerHTML = `bikes, ${st.capacity - b} open docks ${state}`;
+  const bar = (p, cls) => `<div class="bar"><i style="width:${(p * 100).toFixed(1)}%;background:var(--${cls})"></i></div>`;
+  $("cRisks").innerHTML = `
+    <span>Runs out within 30 min</span>${bar(fc.pE, "empty")}<span class="v">${pct(fc.pE)}</span>
+    <span>Runs out within 1 h</span>${bar(e60, "empty")}<span class="v">${pct(e60)}</span>
+    <span>Fills up within 30 min</span>${bar(fc.pF, "full")}<span class="v">${pct(fc.pF)}</span>
+    <span>Fills up within 1 h</span>${bar(f60, "full")}<span class="v">${pct(f60)}</span>`;
+  drawFan($("cFan"), i, poll);
+  drawRates($("cRates"), i);
+  if ($("cMat").closest("details").open) drawMatrix($("cMat"), i);
+  const hr = Math.floor(minute / 60) % 24;
+  $("cMatNote").textContent = `${String(hr).padStart(2, "0")}:00 to ${String((hr + 1) % 24).padStart(2, "0")}:00: ${st.ratesIn[hr].toFixed(1)} returns and ${st.ratesOut[hr].toFixed(1)} pickups an hour. ${st.capacity + 1} × ${st.capacity + 1} states.`;
+}
+
+function renderRiskList() {
+  const fc = forecasts(pollOf(minute)).map((f) => ({ ...f, p: Math.max(f.pE, f.pF), e: f.pE >= f.pF }));
+  fc.sort((a, b) => b.p - a.p);
+  $("riskList").innerHTML = fc.slice(0, 5).map((f) => `<li><button type="button" data-i="${f.i}" aria-current="${f.i === selected}">
+    <span>${model.stations[f.i].name}</span><span class="p ${f.e ? "e" : "f"}">${pct(f.p)} ${f.e ? "out" : "full"}</span></button></li>`).join("");
+  $("riskList").querySelectorAll("button").forEach((b) => b.onclick = () => select(+b.dataset.i));
+}
+
+function select(i) { selected = i; renderAll(); }
+
+let lastRendered = { min: -1, poll: -1, sel: -1 };
+function renderAll(force = true) {
+  const m = Math.floor(minute), poll = pollOf(minute);
+  $("clock").textContent = fmtT(minute);
+  $("poll").textContent = `last poll ${fmtT(poll)}`;
+  $("scrub").value = String(m);
+  const k = Math.min(m - START, END - START);
+  $("mE").textContent = Math.round(sim.cumE[k]).toLocaleString();
+  $("mF").textContent = Math.round(sim.cumF[k]).toLocaleString();
+  $("mP").textContent = sim.cumP[k].toLocaleString();
+  $("mR").textContent = sim.cumR[k].toLocaleString();
+  if (force || poll !== lastRendered.poll || selected !== lastRendered.sel) renderRiskList();
+  if (force || m !== lastRendered.min || selected !== lastRendered.sel) renderCard();
+  lastRendered = { min: m, poll, sel: selected };
+  draw(); drawStrip();
+}
+
+function setMinute(m) { minute = Math.max(START, Math.min(END, m)); renderAll(true); }
+
+// ---------- playback ----------
+let lastT = 0;
+function tick(t) {
+  if (!playing) return;
+  const dt = Math.min(0.1, (t - lastT) / 1000); lastT = t;
+  minute += dt * Number($("speed").value);
+  if (minute >= END) { minute = END; setPlaying(false); }
+  renderAll(false);
+  requestAnimationFrame(tick);
+}
+function setPlaying(p) {
+  playing = p;
+  $("play").setAttribute("aria-label", p ? "Pause" : "Play");
+  $("playIcon").setAttribute("d", p ? "M3 1.5h3.5v13H3zM9.5 1.5H13v13H9.5z" : "M3 1.5v13l11-6.5z");
+  if (p) { if (minute >= END) minute = START; lastT = performance.now(); requestAnimationFrame(tick); }
+}
+$("play").onclick = () => setPlaying(!playing);
+$("scrub").addEventListener("input", (e) => setMinute(+e.target.value));
+$("newDay").onclick = () => { seed = (seed * 1103515245 + 12345) >>> 0; newDay(seed); };
+document.addEventListener("keydown", (e) => { if (e.code === "Space" && !/INPUT|SELECT|BUTTON|SUMMARY/.test(e.target.tagName)) { e.preventDefault(); setPlaying(!playing); } });
+document.addEventListener("toggle", (e) => { if (e.target.tagName === "DETAILS" && e.target.open) drawMatrix($("cMat"), selected); }, true);
+
+$("fileIn").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  try { setPlaying(false); selected = 0; cardBuiltFor = -1; loadModel(JSON.parse(await f.text())); }
+  catch (err) { $("card").insertAdjacentHTML("afterbegin", `<p class="err" role="alert">${err.message}</p>`); cardBuiltFor = -1; }
+  e.target.value = "";
+});
+
+window.addEventListener("resize", () => { resize(); renderAll(true); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { landKey = ""; legend(); renderAll(true); });
+
+buildLandPath();
+legend();
+loadModel(DEMO);
+// Start on the station most at risk at the first morning poll after 07:30, so the demo opens on the rush.
+minute = 450; fcCache.poll = -1;
+{ const fc = forecasts(pollOf(minute)); selected = fc.reduce((b, f) => Math.max(f.pE, f.pF) > Math.max(fc[b].pE, fc[b].pF) ? f.i : b, 0); }
+setMinute(450);
+</script>
+</body>
+</html>
