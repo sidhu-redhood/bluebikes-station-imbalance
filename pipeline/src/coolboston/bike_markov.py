@@ -82,14 +82,21 @@ def transition(q: np.ndarray, minutes: float) -> np.ndarray:
     term = np.eye(n)
     k, total = 0, 0.0
     k_max = int(lam + 10 * math.sqrt(lam) + 20)
-    while k <= k_max:
-        w = math.exp(-lam + k * math.log(lam) - math.lgamma(k + 1))
-        p += w * term
-        total += w
-        if 1.0 - total < UNIFORM_TOL and k > lam:
-            break
-        term = term @ u
-        k += 1
+    # U is row-stochastic, so every power of it stays in [0, 1] and nothing here can overflow. Some
+    # BLAS builds (notably Apple Accelerate with numpy 2.x) nevertheless set spurious divide/overflow/
+    # invalid flags inside `@`, which numpy reports as RuntimeWarnings. The finiteness check below is
+    # the real guard, so the warnings are silenced for this loop only.
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        while k <= k_max:
+            w = math.exp(-lam + k * math.log(lam) - math.lgamma(k + 1))
+            p += w * term
+            total += w
+            if 1.0 - total < UNIFORM_TOL and k > lam:
+                break
+            term = term @ u
+            k += 1
+    if not np.isfinite(p).all():
+        raise FloatingPointError("transition(): non-finite entries; check the rates")
     # Renormalise away the truncated tail.
     return p / p.sum(axis=1, keepdims=True)
 
@@ -114,8 +121,10 @@ def forecast(m: StationModel, bikes_now: int, start_min: float, steps: int, step
     mats = hourly_transitions(m, step_min) if mats is None else mats
     out = np.zeros((steps + 1, m.capacity + 1))
     out[0, bikes_now] = 1.0
-    for t in range(steps):
-        out[t + 1] = out[t] @ mats[_hour_at(start_min, t, step_min)]
+    # Probability vector times stochastic matrix stays in [0, 1]; silence the spurious BLAS flags (see transition()).
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        for t in range(steps):
+            out[t + 1] = out[t] @ mats[_hour_at(start_min, t, step_min)]
     return out
 
 

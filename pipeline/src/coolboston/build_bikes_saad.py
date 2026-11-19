@@ -13,9 +13,9 @@ Inputs (place under <repo>/data/raw/, the layout Saad's loader expects):
   current_bluebikes_stations.csv     (official station list, for dock capacity)
 
 Run:
-    cd pipeline
-    uv run --with numpy --with pandas python -m coolboston.build_bikes_saad
-    uv run --with numpy --with pandas python -m coolboston.build_bikes_saad --status  # live start counts
+    export PYTHONPATH=$PWD/pipeline/src   # from the repo root
+    python -m coolboston.build_bikes_saad
+    python -m coolboston.build_bikes_saad --status  # live start counts
 """
 
 from __future__ import annotations
