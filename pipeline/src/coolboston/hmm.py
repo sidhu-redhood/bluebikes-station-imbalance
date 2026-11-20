@@ -18,6 +18,7 @@ from coolboston.bike_markov import HOURS, STEP_MIN, StationModel, _hour_at, hour
 
 EPS = 0.05
 MIN_AVAILABLE = 0.2
+JUMP = 0.001  # chance per 10 min of a van move or station reset (any count can follow)
 
 
 # ---------- emissions ----------
@@ -42,6 +43,10 @@ def obs_likelihood(o, B):
 
 # ---------- forward / backward ----------
 
+def with_jumps(A):
+    return (1 - JUMP) * A + JUMP / A.shape[0]
+
+
 def forward(pi, mats, obs, B, start_min):
     T, n = len(obs), len(pi)
     alpha = np.zeros((T, n))
@@ -49,7 +54,7 @@ def forward(pi, mats, obs, B, start_min):
     a = pi * obs_likelihood(obs[0], B)
     for t in range(T):
         if t > 0:
-            A = mats[_hour_at(start_min, t - 1, STEP_MIN)]
+            A = with_jumps(mats[_hour_at(start_min, t - 1, STEP_MIN)])
             a = (alpha[t - 1] @ A) * obs_likelihood(obs[t], B)
         scale[t] = a.sum()
         alpha[t] = a / scale[t]
@@ -60,7 +65,7 @@ def backward(mats, obs, B, start_min, scale):
     T, n = len(obs), B.shape[0]
     beta = np.ones((T, n))
     for t in range(T - 2, -1, -1):
-        A = mats[_hour_at(start_min, t, STEP_MIN)]
+        A = with_jumps(mats[_hour_at(start_min, t, STEP_MIN)])
         beta[t] = A @ (obs_likelihood(obs[t + 1], B) * beta[t + 1]) / scale[t + 1]
     return beta
 
@@ -127,6 +132,7 @@ def load_day(db_path, station, day):
              FROM station_status s JOIN stations st ON st.station_id = s.station_id
             WHERE st.short_name = ? AND s.fetched_at >= ? AND s.fetched_at < ?
               AND s.num_bikes_available IS NOT NULL
+              AND COALESCE(s.is_installed, 1) = 1 AND COALESCE(s.is_renting, 1) = 1
             ORDER BY s.fetched_at""",
         (station, start, start + slots * step),
     ).fetchall()
