@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 
 from coolboston.bike_markov import StationModel, hourly_transitions, simulate_day, stationary_occupancy
-from coolboston.hmm import corrected_rates, emission_matrix, hourly_empty_full, obs_likelihood, posterior
+from coolboston.hmm import (
+    corrected_rates, emission_matrix, hourly_empty_full, obs_likelihood, posterior, with_jumps,
+)
 
 
 def make_model(cap=3, a=9.0, d=5.0):
@@ -21,7 +23,7 @@ def test_emission_rows_sum_to_one():
 def test_posterior_matches_brute_force():
     m = make_model()
     obs = [1, None, 2, 3, None]
-    A = hourly_transitions(m)[0]
+    A = with_jumps(hourly_transitions(m)[0])
     pi = stationary_occupancy(m, 0)
     B = emission_matrix(3, 0.2)
     n, T = 4, len(obs)
@@ -54,6 +56,14 @@ def test_hmm_beats_raw_counts():
     gamma, _ = posterior(m, obs, 0, eps=0.1)
     raw = np.array([-1 if o is None else o for o in obs])
     assert (gamma.argmax(axis=1) != truth).sum() < (raw != truth).sum()
+
+
+def test_van_jump_does_not_break():
+    m = StationModel(15, np.full(24, 0.1), np.full(24, 0.1))
+    obs = [0] * 10 + [15] * 10
+    gamma, loglik = posterior(m, obs)
+    assert np.isfinite(loglik) and np.all(np.isfinite(gamma))
+    assert gamma[5].argmax() == 0 and gamma[15].argmax() == 15
 
 
 def test_censoring_correction():
@@ -90,3 +100,9 @@ def test_load_day_puts_polls_in_slots(tmp_path):
     obs = load_day(db, "B1", date(2026, 11, 3))
     assert len(obs) == 144
     assert obs[:4] == [4, 5, 7, None]
+
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE station_status SET is_installed = 0, is_renting = 0 WHERE fetched_at = ?", (t0 + 630,))
+    conn.commit()
+    conn.close()
+    assert load_day(db, "B1", date(2026, 11, 3))[:3] == [4, None, 7]
