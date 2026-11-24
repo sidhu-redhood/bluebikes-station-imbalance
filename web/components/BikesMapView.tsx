@@ -5,9 +5,12 @@ import { GeoJsonLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { useEffect, useMemo, useState } from "react";
 import Map, { Marker, NavigationControl, ScaleControl, useMap } from "react-map-gl/mapbox";
 import { DeckOverlay, type InterleavedLayerProps } from "@/components/DeckOverlay";
+import RlPanel from "@/components/RlPanel";
 import { BIKES_URL, parseBikes, type BikeStation, type BikesFile } from "@/lib/bikes";
 import { BASEMAP_CONFIG, BOSTON_OVERVIEW, BOSTON_VIEW, MAP_STYLE, NORTHEASTERN } from "@/lib/mapConfig";
 import { compile, hitEmpty, hitFull, rng, simulate, type Compiled, type DayTrace } from "@/lib/markov";
+import { LIVE_URL, bostonMinute, parseSnapshot } from "@/lib/live";
+import { DEFAULT_HMM, filter, hmmHitEmpty, hmmHitFull, observeDay, startPrior, summarize, type BeliefSummary } from "@/lib/hmm";
 import {
   NEIGHBORHOODS_URL,
   NEIGHBORHOOD_COLORS,
@@ -50,7 +53,22 @@ const hhmm = (m: number) => (DAYS > 1 ? `Day ${Math.floor(m / (24 * 60)) + 1} ${
 const RISK_ON = 0.35;
 
 interface Live { st: BikeStation; c: Compiled; trace: DayTrace }
-interface Row { live: Live; bikes: number; pE: number; pF: number }
+type Mode = "markov" | "hmm" | "live";
+/** Real readings collected this session. Held in React state only: nothing is written to disk,
+ *  localStorage or a database, and it is dropped when you leave Live mode or close the page. */
+interface LiveRun { startMin: number; obs: Record<string, (number | null)[]>; updated: number | null; error: string | null }
+const LIVE_EVERY_MS = 30_000;
+/** bikes is the simulated truth. In HMM mode the rest describe what the poller can know:
+ *  est = belief over the hidden count, reading = this poll (null if dropped), seenMin = last good poll. */
+interface Row {
+  live: Live;
+  bikes: number;
+  pE: number;
+  pF: number;
+  est?: BeliefSummary;
+  reading?: number | null;
+  seenMin?: number | null;
+}
 
 /** Flies the camera to the 3D hero view or the wide overview when `mode` changes.
  *  Must be rendered inside <Map> so useMap() can reach the map instance. */
@@ -183,6 +201,16 @@ export default function BikesMapView({ token }: { token: string }) {
   const [pulse, setPulse] = useState(0); // 0..1 breathing phase for risk halos
   const [flyTarget, setFlyTarget] = useState<(PlaceTarget & { nonce: number }) | null>(null);
   const [showAnalysis, setShowAnalysis] = useState(true);
+  const [mode, setMode] = useState<Mode>("markov");
+  const [showRl, setShowRl] = useState(false);
+  const [liveRun, setLiveRun] = useState<LiveRun | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const isHmm = mode !== "markov";
+  const choose = (next: Mode) => {
+    setPlaying(false);
+    if (mode === "live" && next !== "live") setMinute(7.5 * 60); // back to the simulated morning
+    setMode(next);
+  };
 
   // Compile the hourly matrices once per file; simulate one day per seed.
   const live = useMemo<Live[] | null>(() => {
@@ -222,16 +250,99 @@ export default function BikesMapView({ token }: { token: string }) {
     return () => cancelAnimationFrame(raf);
   }, [playing]);
 
+  // Live mode: poll the server route, which reads the Bluebikes feed straight into memory. Each
+  // reading goes into the slot (one per model step) it arrived in, and a missed fetch leaves null.
+  // State only; leaving Live mode (or closing the page) discards everything.
+  useEffect(() => {
+    if (mode !== "live" || data.status !== "ready") return;
+    const ids = data.doc.stations.map((s) => s.id), t0 = Date.now();
+    let alive = true;
+    const pull = async () => {
+      try {
+        const r = await fetch(LIVE_URL, { cache: "no-store" });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+        const snap = parseSnapshot(j);
+        if (!alive) return;
+        const slot = Math.floor((Date.now() - t0) / (step * 60_000));
+        setLiveRun((prev) => {
+          const base = prev ?? { startMin: bostonMinute(new Date(t0)), obs: {}, updated: null, error: null };
+          const obs: Record<string, (number | null)[]> = {};
+          for (const id of ids) {
+            const arr = (base.obs[id] ?? []).slice();
+            while (arr.length <= slot) arr.push(null);
+            arr[slot] = snap.readings[id] ?? arr[slot]; // a later reading in the same slot replaces the earlier one
+            obs[id] = arr;
+          }
+          return { startMin: base.startMin, obs, updated: snap.updated, error: null };
+        });
+        setLiveError(null);
+        setMinute(bostonMinute(new Date()));
+      } catch (e) {
+        if (alive) setLiveError((e as Error).message);
+      }
+    };
+    void pull();
+    const timer = setInterval(pull, LIVE_EVERY_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      setLiveRun(null);
+      setLiveError(null);
+    };
+  }, [mode, data, step]);
+
   // Forecast from the last 10-minute poll, as the GBFS tracker would.
-  const poll = Math.max(start, Math.floor(minute / step) * step);
+  const poll = mode === "live" ? Math.floor(minute / step) * step : Math.max(start, Math.floor(minute / step) * step);
+  // HMM modes: the model never sees the true count, only polls. In HMM they are simulated (dropped or
+  // read with small error); in Live they are the real feed. A forward filter turns them into a belief.
+  const filtered = useMemo(() => {
+    if (!live) return null;
+    if (mode === "hmm")
+      return {
+        startMin: start,
+        list: live.map((l, i) =>
+          filter(l.c, start, startPrior(l.st.capacity, l.st.initialBikes), observeDay(l.trace.bikes, l.st.capacity, step, seed * 31 + i)),
+        ),
+      };
+    if (mode === "live" && liveRun)
+      return {
+        startMin: liveRun.startMin,
+        list: live.map((l) => {
+          const obs = liveRun.obs[l.st.id] ?? [];
+          const first = obs.find((v) => v !== null) ?? l.st.initialBikes;
+          return filter(l.c, liveRun.startMin, startPrior(l.st.capacity, first), obs);
+        }),
+      };
+    return null;
+  }, [live, mode, liveRun, seed, start, step]);
+
   const rows = useMemo<Row[]>(() => {
-    if (!live) return [];
+    if (!live || (mode === "live" && !filtered)) return [];
     const k = Math.round(30 / step), at = (l: Live, m: number) => l.trace.bikes[Math.min(Math.round(m) - start, l.trace.bikes.length - 1)];
-    return live.map((l) => {
+    const pk = Math.round((poll - start) / step);
+    return live.map((l, i) => {
+      const f = filtered?.list[i];
+      if (f && filtered) {
+        // Live: newest slot. HMM: the slot at the current simulated poll.
+        const j = mode === "live" ? f.beliefs.length - 1 : Math.min(pk, f.beliefs.length - 1);
+        const belief = f.beliefs[j], pollAt = filtered.startMin + j * step, est = summarize(belief);
+        let seen = j;
+        while (seen >= 0 && f.obs[seen] === null) seen--;
+        return {
+          live: l,
+          bikes: mode === "live" ? Math.round(est.mean) : at(l, minute),
+          pE: hmmHitEmpty(l.c, belief, pollAt, k),
+          pF: hmmHitFull(l.c, belief, pollAt, k),
+          est,
+          reading: f.obs[j],
+          seenMin: seen >= 0 ? filtered.startMin + seen * step : null,
+        };
+      }
       const b0 = at(l, poll);
       return { live: l, bikes: at(l, minute), pE: hitEmpty(l.c, b0, poll, k), pF: hitFull(l.c, b0, poll, k) };
     });
-  }, [live, minute, poll, start, step]);
+  }, [live, filtered, mode, minute, poll, start, step]);  const blind = rows.filter((d) => d.reading === null).length; // stations whose latest poll was dropped
 
   // The model's dominant 30-min risk for a station right now: how big and what color the halo is.
   // Run-out risk is red; fill-up risk is green (matching the full = green fill scale).
@@ -318,7 +429,8 @@ export default function BikesMapView({ token }: { token: string }) {
         getRadius: (d) => 9 + Math.sqrt(d.live.st.capacity) * 3,
         radiusUnits: "meters",
         radiusMinPixels: 5,
-        getFillColor: (d) => fillColor(d.bikes / d.live.st.capacity),
+        // HMM mode colors by the estimated count (what the poller can know), not the simulated truth.
+        getFillColor: (d) => fillColor((d.est?.mean ?? d.bikes) / d.live.st.capacity),
         // Morning-commute destinations get a gold outline; everything else white.
         getLineColor: (d) => (d.live.st.isAmDestination ? [245, 190, 70, 255] : [255, 255, 255, 255]),
         getLineWidth: (d) => (d.live.st.isAmDestination ? 2.6 : 1.2),
@@ -328,7 +440,7 @@ export default function BikesMapView({ token }: { token: string }) {
         pickable: true,
         onClick: ({ index }) => setPicked(index),
         updateTriggers: {
-          getFillColor: [minute, rows],
+          getFillColor: [minute, rows, mode],
           getLineColor: [rows],
           getLineWidth: [rows],
         },
@@ -395,14 +507,51 @@ export default function BikesMapView({ token }: { token: string }) {
       </nav>
 
       {/* Live model HUD: makes the Markov model visible as the day plays. */}
-      <aside aria-label="Markov model status" className="absolute left-3 top-36 w-60 rounded-lg border border-border bg-card/95 p-3 text-sm shadow-sm backdrop-blur">
+      <aside aria-label={isHmm ? "HMM status" : "Markov model status"} className="absolute left-3 top-36 w-60 rounded-lg border border-border bg-card/95 p-3 text-sm shadow-sm backdrop-blur">
+        <div role="group" aria-label="Analysis model" className="mb-2 grid grid-cols-3 gap-1 rounded-md border border-border p-0.5 text-xs font-medium">
+          {([["markov", "Markov"], ["hmm", "HMM"], ["live", "Live"]] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={mode === key}
+              onClick={() => choose(key)}
+              className={`rounded px-2 py-1 ${mode === key ? "bg-foreground text-background" : "hover:bg-muted"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          disabled={!live}
+          aria-expanded={showRl}
+          onClick={() => setShowRl(true)}
+          className="mb-2 w-full rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+        >
+          RL analysis: van rebalancing
+        </button>
         <div className="flex items-center justify-between">
-          <span className="font-semibold">Markov model</span>
+          <span className="font-semibold">{isHmm ? "Hidden Markov model" : "Markov model"}</span>
           <span className="tabular-nums text-muted-foreground">{hhmm(minute)}</span>
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          {playing ? "Simulating the day, station by station…" : "Press Play to run a simulated day."}
+          {mode === "live"
+            ? "Real Bluebikes feed, Boston time."
+            : playing ? "Simulating the day, station by station…" : "Press Play to run a simulated day."}
         </p>
+        {mode === "hmm" && (
+          <p className="mt-1 text-xs leading-snug text-muted-foreground">
+            The bike count is hidden. Each poll is dropped {Math.round(DEFAULT_HMM.dropRate * 100)}% of the time or read with small
+            error, and a filter estimates the count. Dot color is the estimate. Polls missed now: <span className="font-semibold tabular-nums">{blind}</span> of {rows.length}.
+          </p>
+        )}
+        {mode === "live" && (
+          <p className="mt-1 text-xs leading-snug text-muted-foreground">
+            {liveRun
+              ? <>Readings come from the live feed every {LIVE_EVERY_MS / 1000}s and are kept in this page only; nothing is saved. Stations offline now: <span className="font-semibold tabular-nums">{blind}</span> of {rows.length}. The estimate sharpens as readings build up. Rates are weekday averages, so weekends will be off.</>
+              : liveError ? "Waiting for the feed…" : "Loading live data…"}
+          </p>
+        )}
         <dl className="mt-2 space-y-1">
           <div className="flex items-center justify-between">
             <dt className="flex items-center gap-1.5">
@@ -450,6 +599,15 @@ export default function BikesMapView({ token }: { token: string }) {
         </ul>
       </div>
 
+      {mode === "live" ? (
+        <section aria-label="Live status" className="absolute bottom-3 left-3 right-3 flex items-center gap-3 rounded-lg border border-border bg-card p-3 text-sm md:right-auto md:w-[520px]">
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-[rgb(38,160,85)]" aria-hidden />
+          <span className="w-14 text-lg font-semibold tabular-nums">{hhmm(minute)}</span>
+          <span className="text-muted-foreground">
+            {liveRun?.updated ? `Feed updated ${new Date(liveRun.updated * 1000).toLocaleTimeString()}` : "Connecting…"}
+          </span>
+        </section>
+      ) : (
       <section aria-label="Simulated day" className="absolute bottom-3 left-3 right-3 flex items-center gap-3 rounded-lg border border-border bg-card p-3 text-sm md:right-auto md:w-[520px]">
         <button type="button" className="rounded-md bg-foreground px-3 py-1.5 text-background" onClick={() => setPlaying((p) => !p)}>
           {playing ? "Pause" : "Play"}
@@ -460,9 +618,10 @@ export default function BikesMapView({ token }: { token: string }) {
           New day
         </button>
       </section>
+      )}
 
       {/* Markov analysis: live ranking of the stations most likely to run out / fill up. */}
-      <aside aria-label="Markov analysis" className={`absolute right-3 w-72 rounded-lg border border-border bg-card/95 p-3 text-sm shadow-sm backdrop-blur ${sel ? "top-[19rem]" : "top-3"}`}>
+      <aside aria-label={isHmm ? "HMM analysis" : "Markov analysis"} className={`absolute right-3 w-72 rounded-lg border border-border bg-card/95 p-3 text-sm shadow-sm backdrop-blur ${sel ? "top-[19rem]" : "top-3"}`}>
         <div className="flex items-center justify-between">
           <span className="font-semibold">At-risk stations · {hhmm(minute)}</span>
           <button type="button" className="text-xs text-muted-foreground" onClick={() => setShowAnalysis((v) => !v)}>
@@ -494,8 +653,10 @@ export default function BikesMapView({ token }: { token: string }) {
               }}
             />
             <p className="text-[11px] leading-snug text-muted-foreground">
-              Probabilities are the Markov model&apos;s 30-minute run-out / fill-up forecast from the
-              {" "}{hhmm(poll)} poll. Click a station to fly there.
+              {isHmm
+                ? "Probabilities are the HMM's 30-minute run-out / fill-up forecast, started from its belief about the count at the "
+                : "Probabilities are the Markov model's 30-minute run-out / fill-up forecast from the "}
+              {hhmm(poll)} poll. Click a station to fly there.
             </p>
           </div>
         )}
@@ -517,15 +678,27 @@ export default function BikesMapView({ token }: { token: string }) {
             </p>
           )}
           <p className="mt-1 text-2xl font-semibold tabular-nums">
-            {sel.bikes} <span className="text-sm font-normal text-muted-foreground">of {sel.live.st.capacity} docks</span>
+            {sel.est ? `~${sel.est.mean.toFixed(1)}` : sel.bikes}{" "}
+            <span className="text-sm font-normal text-muted-foreground">
+              {sel.est ? `estimated bikes of ${sel.live.st.capacity} docks` : `of ${sel.live.st.capacity} docks`}
+            </span>
           </p>
+          {sel.est && (
+            <p className="text-xs text-muted-foreground">
+              80% sure it is {sel.est.lo}–{sel.est.hi}. Latest poll:{" "}
+              {sel.reading !== null && sel.reading !== undefined
+                ? `read ${sel.reading}`
+                : `missed${sel.seenMin != null ? `, last read at ${hhmm(sel.seenMin)}` : ", none read yet"}`}
+              .{mode === "live" ? "" : ` Simulated truth: ${sel.bikes}.`}
+            </p>
+          )}
           {/* Live fill bar: moves every minute while the simulation plays. */}
           <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-muted" aria-hidden>
             <div
               className="h-full rounded-full transition-all"
               style={{
-                width: `${Math.round((sel.bikes / sel.live.st.capacity) * 100)}%`,
-                background: `rgb(${fillColor(sel.bikes / sel.live.st.capacity).slice(0, 3).join(",")})`,
+                width: `${Math.round(((sel.est?.mean ?? sel.bikes) / sel.live.st.capacity) * 100)}%`,
+                background: `rgb(${fillColor((sel.est?.mean ?? sel.bikes) / sel.live.st.capacity).slice(0, 3).join(",")})`,
               }}
             />
           </div>
@@ -536,12 +709,20 @@ export default function BikesMapView({ token }: { token: string }) {
               {typeof sel.live.st.amNetFlow === "number" ? ` (+${sel.live.st.amNetFlow.toFixed(1)} bikes/hr in, 6–10am)` : ""}
             </p>
           )}
-          <p className="mt-3 text-muted-foreground">Markov forecast from the {hhmm(poll)} poll (updates live):</p>
+          <p className="mt-3 text-muted-foreground">{isHmm ? "HMM" : "Markov"} forecast from the {hhmm(poll)} poll (updates live):</p>
           <div className="mt-1 space-y-1.5">
             <RiskBar label="Runs out within 30 min" value={sel.pE} color="rgb(200,36,59)" />
             <RiskBar label="Fills up within 30 min" value={sel.pF} color="rgb(38,160,85)" />
           </div>
         </aside>
+      )}
+      {showRl && live && (
+        <RlPanel stations={live.map((l) => l.st)} compiled={live.map((l) => l.c)} onClose={() => setShowRl(false)} />
+      )}
+      {mode === "live" && liveError && (
+        <p role="alert" className="absolute left-1/2 top-16 -translate-x-1/2 rounded-md bg-destructive px-3 py-1 text-xs text-white">
+          Live feed problem: {liveError}. Retrying every {LIVE_EVERY_MS / 1000}s.
+        </p>
       )}
       {data.status === "error" && (
         <p role="alert" className="absolute left-1/2 top-2 -translate-x-1/2 rounded-md bg-destructive px-3 py-1 text-xs text-white">
